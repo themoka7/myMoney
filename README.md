@@ -1,0 +1,87 @@
+# myMoney — 일별 TOP10 스크리너 & 추이 기록
+
+매 거래일 장 마감 후 KOSPI·KOSDAQ 전종목을 카테고리별로 점수화해 **TOP10**을 고르고,
+그 결과를 날마다 쌓아서 **순위 변화**와 **"다음날 들고 있었다면?" 성과**를 비교하는 학습용 프로젝트.
+
+> 감은 검증되지 않는다. 코드는 검증된다. — [`notes/01-소액투자-착각과-검증.md`](notes/01-소액투자-착각과-검증.md)
+
+## 카테고리와 점수
+
+모든 점수는 그날 **유니버스 안에서의 백분위(0~100)** 다. 절대 기준이 아니라 상대 순위.
+
+| 카테고리 | 계산 | 제외 |
+|---|---|---|
+| 가치 | (PER 낮은 순 백분위 + PBR 낮은 순 백분위) / 2 | PER ≤ 0, PBR ≤ 0 (적자) |
+| 배당 | 배당수익률 백분위 | 무배당, 적자 |
+| 모멘텀 | (1개월 수익률 백분위 + 3개월 수익률 백분위) / 2 | |
+| 외국인수급 | 최근 5거래일 외국인 순매수대금 ÷ 시가총액 백분위 | |
+| 종합 | 가치 0.3 + 배당 0.2 + 모멘텀 0.3 + 외국인 0.2 | 4개 중 하나라도 없으면 제외 |
+
+**유니버스**: 시가총액 3천억 원 이상 · 당일 거래대금 10억 원 이상 · 우선주 제외.
+기준값은 전부 [`mymoney/config.py`](mymoney/config.py) 한 곳에서 바꾼다.
+
+## 추이 비교 (대시보드)
+
+`docs/index.html` — GitHub Pages로 띄우는 정적 페이지.
+
+- **TOP10 표**: 전일 대비 순위 변동(▲▼ / NEW), 연속 진입 일수, TOP10 이탈 종목
+- **순위 추이**: 선택한 날의 TOP10이 최근 20일간 몇 위였는지
+- **"다음날 보유했다면" 누적 수익률**: d일 TOP10을 동일가중으로 d+1일 보유했을 때
+  - 종가→종가 (이론값, 교체율 × 0.3% 비용 차감)
+  - 시가→종가 (결과를 보고 다음날 아침 사서 그날 판 경우, 매일 0.3% 비용 차감)
+  - 평균 갭(종가→시가) vs 평균 장중(시가→종가)을 분리 표시 → *"보이지만 먹을 수 없는 정보"* 인지 확인
+  - 유니버스 동일가중 평균을 기준선으로
+
+## 구조
+
+```
+mymoney/
+  config.py     기준값 (유니버스 필터, 가중치, 비용)
+  collect.py    pykrx로 하루치 전종목 스냅샷 수집
+  score.py      스냅샷 → 카테고리별 점수, TOP N
+  track.py      저장, 순위 변화, 다음날 성과, 대시보드 데이터 생성
+  __main__.py   CLI
+data/
+  snapshots/YYYYMMDD.csv.gz   전종목 스냅샷 (성과 계산의 원천)
+  top10/YYYYMMDD.json         그날의 카테고리별 TOP10
+docs/
+  index.html                  대시보드
+  data/history.json           대시보드용 집계 (data/로부터 매번 재생성)
+```
+
+## 사용법
+
+```bash
+pip install -r requirements.txt
+
+export KRX_ID=...   # KRX 정보데이터시스템(data.krx.co.kr) 계정
+export KRX_PW=...   # pykrx 1.2.x부터 로그인 필요
+
+python -m mymoney run                    # 최근 영업일 수집 → 저장 → 대시보드 데이터 갱신
+python -m mymoney run --date 20261014    # 특정일 (과거 날짜 백필도 가능)
+python -m mymoney show                   # 저장된 최신 TOP10을 터미널로
+python -m mymoney build                  # data/ 로부터 history.json만 재생성
+
+python -m pytest -q                      # 합성 데이터로 점수·추이 로직 테스트
+```
+
+대시보드 로컬 확인: `cd docs && python -m http.server` → http://localhost:8000
+
+## 자동화 (GitHub Actions)
+
+`.github/workflows/daily.yml` 이 평일 16:40 KST에 실행되어 결과를 `main`에 커밋한다.
+
+1. **Settings → Secrets and variables → Actions** 에 `KRX_ID`, `KRX_PW` 등록
+2. **Settings → Pages** → Source: *Deploy from a branch*, Branch: `main` / `/docs`
+3. **Actions → daily-top10 → Run workflow** 로 첫 실행 (날짜를 넣어 과거 며칠을 백필하면 추이가 바로 보인다)
+
+휴장일에는 가장 가까운 이전 영업일로 잡히고, 이미 수집된 날짜면 건너뛴다.
+
+## 한계 (알고 쓰기)
+
+- 성과는 **동일가중·슬리피지 무시·체결 가정**이다. 실전 수익이 아니다.
+- 데이터는 장 마감 후 나오므로 **종가→종가는 실제로 먹을 수 없는 숫자**다. 시가→종가가 현실에 가깝다.
+- 기간이 짧을 때의 승률·누적수익은 노이즈다. 최소 수개월, 상승·하락·횡보장을 모두 지나야 의미가 생긴다.
+- 성장률(매출·EPS YoY) 기반 PEG는 OpenDART 연동이 필요해 아직 미포함.
+
+*투자 권유가 아닌 개인 학습 기록입니다.*

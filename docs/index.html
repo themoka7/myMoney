@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>일별 TOP10 추이</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #f7f7f5; --card: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e4e3df;
+  --accent: #2f5bd3; --up: #d1342f; --down: #2e64c9; --new: #b7791f; --chip: #eef1fb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #151514; --card: #1e1e1c; --text: #ecebe7; --muted: #9b9a94; --line: #33322f;
+    --accent: #7b9bf0; --up: #f0716c; --down: #6f9cf0; --new: #e0aa52; --chip: #262b3a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+select, button { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.tab { border-radius: 999px; }
+.tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+.card h2 { font-size: 15px; margin: 0 0 4px; }
+.card .desc { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 13px; }
+td.l, th.l { text-align: left; }
+.up { color: var(--up); } .down { color: var(--down); } .new { color: var(--new); font-weight: 600; }
+.code { color: var(--muted); font-size: 12px; margin-left: 4px; }
+.dropped { color: var(--muted); font-size: 13px; margin-top: 10px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.stat { background: var(--chip); border-radius: 8px; padding: 8px 10px; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12px; }
+.chartbox { position: relative; height: 300px; }
+.empty { color: var(--muted); padding: 40px 0; text-align: center; }
+footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>일별 TOP10 추이</h1>
+  <p class="sub" id="sub">데이터 불러오는 중…</p>
+
+  <div class="bar">
+    <button id="prev" aria-label="이전 날짜">◀</button>
+    <select id="date" aria-label="날짜"></select>
+    <button id="next" aria-label="다음 날짜">▶</button>
+  </div>
+  <div class="tabs" id="tabs" role="tablist"></div>
+
+  <div id="content"></div>
+
+  <footer>
+    점수는 그날 유니버스(시총·거래대금 기준 통과 종목) 안에서의 백분위입니다. 수익률은 동일가중이며
+    비용 <span id="cost"></span>를 반영합니다. 투자 권유가 아닌 개인 학습용 기록입니다.
+  </footer>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const pct = (v, d = 2) => v == null ? "–" : (v * 100).toFixed(d) + "%";
+const fmtDate = (d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const PALETTE = ["#2f5bd3", "#d1342f", "#1f9d6b", "#b7791f", "#8a4fd3", "#0e8fb0", "#c2417d", "#5c7a1f", "#e07b39", "#6b6b66"];
+
+let DATA, state = { date: null, cat: "composite" }, charts = {};
+
+try { const saved = localStorage.getItem("mymoney.cat"); if (saved) state.cat = saved; } catch (e) {}
+
+fetch("data/history.json", { cache: "no-store" })
+  .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then((d) => { DATA = d; init(); })
+  .catch(() => { $("#sub").textContent = "아직 수집된 데이터가 없습니다. GitHub Actions 첫 실행 후 다시 확인하세요."; });
+
+function init() {
+  if (!DATA.categories[state.cat]) state.cat = "composite";
+  $("#cost").textContent = pct(DATA.round_trip_cost, 1);
+  const sel = $("#date");
+  [...DATA.dates].reverse().forEach((d) => sel.add(new Option(fmtDate(d), d)));
+  state.date = DATA.dates[DATA.dates.length - 1];
+  sel.value = state.date;
+  sel.onchange = () => { state.date = sel.value; render(); };
+  $("#prev").onclick = () => step(-1);
+  $("#next").onclick = () => step(1);
+  const tabs = $("#tabs");
+  Object.entries(DATA.categories).forEach(([k, v]) => {
+    const b = document.createElement("button");
+    b.className = "tab"; b.textContent = v.label; b.dataset.cat = k; b.setAttribute("role", "tab");
+    b.onclick = () => { state.cat = k; try { localStorage.setItem("mymoney.cat", k); } catch (e) {} render(); };
+    tabs.appendChild(b);
+  });
+  render();
+}
+
+function step(n) {
+  const i = DATA.dates.indexOf(state.date) + n;
+  if (i < 0 || i >= DATA.dates.length) return;
+  state.date = DATA.dates[i]; $("#date").value = state.date; render();
+}
+
+function render() {
+  const day = DATA.days[state.date], cat = state.cat, meta = DATA.categories[cat];
+  $("#sub").textContent = `${DATA.dates.length}일치 기록 · ${fmtDate(DATA.dates[0])} ~ ${fmtDate(DATA.dates.at(-1))} · 이 날 유니버스 ${day.universe_size}종목`;
+  document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-selected", b.dataset.cat === cat));
+  $("#prev").disabled = state.date === DATA.dates[0];
+  $("#next").disabled = state.date === DATA.dates.at(-1);
+
+  const items = day.categories[cat] || [];
+  const rows = items.map((it) => {
+    let move;
+    if (it.prev_rank == null) move = `<span class="new">NEW</span>`;
+    else if (it.prev_rank === it.rank) move = "–";
+    else if (it.prev_rank > it.rank) move = `<span class="up">▲${it.prev_rank - it.rank}</span>`;
+    else move = `<span class="down">▼${it.rank - it.prev_rank}</span>`;
+    return `<tr><td>${it.rank}</td><td>${move}</td>
+      <td class="l">${it.name}<span class="code">${it.ticker}</span></td>
+      <td class="l">${it.market}</td><td>${it.score.toFixed(1)}</td>
+      <td>${Math.round(it.close).toLocaleString()}</td><td>${it.streak}일</td></tr>`;
+  }).join("");
+  const dropped = (day.dropped[cat] || []).map((x) => `${x.name}(${x.prev_rank}위)`).join(", ");
+
+  $("#content").innerHTML = `
+    <section class="card">
+      <h2>${meta.label} TOP${DATA.top_n} · ${fmtDate(state.date)}</h2>
+      <p class="desc">${meta.desc}</p>
+      ${items.length ? `<div class="tablewrap"><table>
+        <thead><tr><th>순위</th><th>전일대비</th><th class="l">종목</th><th class="l">시장</th><th>점수</th><th>종가</th><th>연속</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>` : `<div class="empty">해당 카테고리 데이터 없음</div>`}
+      ${dropped ? `<div class="dropped">TOP${DATA.top_n} 이탈: ${dropped}</div>` : ""}
+    </section>
+    <div class="grid">
+      <section class="card">
+        <h2>순위 추이 (최근 20일)</h2>
+        <p class="desc">이 날 TOP${DATA.top_n} 종목들이 과거에 몇 위였는지. 끊긴 구간은 순위권 밖.</p>
+        <div class="chartbox"><canvas id="rankChart"></canvas></div>
+      </section>
+      <section class="card">
+        <h2>"다음날 보유했다면" 누적 수익률</h2>
+        <p class="desc">종가→종가는 이론값, 시가→종가는 결과를 보고 다음날 아침 사서 그날 판 경우.</p>
+        <div class="stats" id="stats"></div>
+        <div class="chartbox"><canvas id="perfChart"></canvas></div>
+      </section>
+    </div>`;
+  drawRank(cat);
+  drawPerf(cat);
+}
+
+function axisColors() {
+  return { color: css("--muted"), grid: css("--line") };
+}
+
+function drawRank(cat) {
+  charts.rank?.destroy();
+  const end = DATA.dates.indexOf(state.date);
+  const dates = DATA.dates.slice(Math.max(0, end - 19), end + 1);
+  const current = DATA.days[state.date].categories[cat] || [];
+  const ax = axisColors();
+  const datasets = current.map((it, i) => ({
+    label: it.name,
+    data: dates.map((d) => {
+      const hit = (DATA.days[d].categories[cat] || []).find((x) => x.ticker === it.ticker);
+      return hit ? hit.rank : null;
+    }),
+    borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length],
+    spanGaps: false, tension: 0.2, pointRadius: 3, borderWidth: 2,
+  }));
+  charts.rank = new Chart($("#rankChart"), {
+    type: "line",
+    data: { labels: dates.map((d) => d.slice(4, 6) + "/" + d.slice(6)), datasets },
+    options: {
+      maintainAspectRatio: false, interaction: { mode: "nearest", intersect: false },
+      scales: {
+        y: { reverse: true, min: 0.5, max: DATA.top_n + 0.5, ticks: { stepSize: 1, color: ax.color, callback: (v) => Number.isInteger(v) ? v : "" }, grid: { color: ax.grid } },
+        x: { ticks: { color: ax.color }, grid: { display: false } },
+      },
+      plugins: { legend: { position: "bottom", labels: { color: ax.color, boxWidth: 10, font: { size: 11 } } } },
+    },
+  });
+}
+
+function cumulative(series, key, untilDate) {
+  let acc = 1;
+  return series.filter((p) => p.date <= untilDate).map((p) => {
+    if (p[key] != null) acc *= 1 + p[key];
+    return { x: p.date, y: acc - 1 };
+  });
+}
+
+function drawPerf(cat) {
+  charts.perf?.destroy();
+  const ser = DATA.performance[cat] || [], uni = DATA.performance.universe || [];
+  const until = state.date;
+  const s = ser.filter((p) => p.date <= until);
+  const ax = axisColors();
+
+  const wins = s.filter((p) => p.c2c_net != null && p.c2c_net > 0).length;
+  const valid = s.filter((p) => p.c2c_net != null).length;
+  const avgGap = s.length ? s.reduce((a, p) => a + (p.gap || 0), 0) / s.length : null;
+  const avgIntra = s.length ? s.reduce((a, p) => a + (p.intraday || 0), 0) / s.length : null;
+  const turnover = s.length ? s.reduce((a, p) => a + p.turnover, 0) / s.length : null;
+  $("#stats").innerHTML = s.length ? `
+    <div class="stat"><b>${s.length}일</b><span>추적 일수</span></div>
+    <div class="stat"><b>${valid ? Math.round(wins / valid * 100) : 0}%</b><span>승률 (종가→종가, 비용후)</span></div>
+    <div class="stat"><b>${pct(avgGap)}</b><span>평균 갭 (종가→시가)</span></div>
+    <div class="stat"><b>${pct(avgIntra)}</b><span>평균 장중 (시가→종가)</span></div>
+    <div class="stat"><b>${pct(turnover, 0)}</b><span>평균 교체율</span></div>`
+    : `<div class="empty" style="grid-column:1/-1">2거래일 이상 쌓이면 표시됩니다.</div>`;
+
+  const label = (d) => d.slice(4, 6) + "/" + d.slice(6);
+  const mk = (data, name, color, dash) => ({
+    label: name, data: data.map((p) => ({ x: label(p.x), y: p.y * 100 })),
+    borderColor: color, backgroundColor: color, borderDash: dash, pointRadius: 0, borderWidth: 2, tension: 0.15,
+  });
+  charts.perf = new Chart($("#perfChart"), {
+    type: "line",
+    data: { datasets: [
+      mk(cumulative(ser, "c2c_net", until), "TOP10 종가→종가 (비용후)", css("--accent"), []),
+      mk(cumulative(ser, "intraday_net", until), "TOP10 시가→종가 (비용후)", css("--up"), []),
+      mk(cumulative(uni, "c2c", until), "유니버스 평균 (기준선)", css("--muted"), [5, 4]),
+    ] },
+    options: {
+      maintainAspectRatio: false, parsing: true,
+      scales: {
+        x: { type: "category", ticks: { color: ax.color }, grid: { display: false } },
+        y: { ticks: { color: ax.color, callback: (v) => v.toFixed(1) + "%" }, grid: { color: ax.grid } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { color: ax.color, boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(2)}%` } },
+      },
+    },
+  });
+}
+</script>
+</body>
+</html>
