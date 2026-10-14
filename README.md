@@ -1,5 +1,16 @@
 # myMoney — 일별 TOP10 스크리너 & 추이 기록
 
+## 👉 바로가기
+
+| 보고 싶은 것 | 링크 |
+|---|---|
+| **오늘(가장 최근) 리포트** | [📊 최신 TOP10 리포트](https://github.com/themoka7/myMoney/releases/latest) |
+| 날짜별 지난 리포트 전체 | [Releases 목록](https://github.com/themoka7/myMoney/releases) |
+| 차트 대시보드 (순위 추이·누적 수익률 그래프) | [대시보드](https://themoka7.github.io/myMoney/) <sub>Settings → Pages 를 `main` / `/docs` 로 켜야 열림</sub> |
+| 배치 실행 기록 / 수동 실행·백필 | [Actions → daily-top10](https://github.com/themoka7/myMoney/actions/workflows/daily.yml) |
+
+리포트는 평일 16:40(KST)에 자동으로 새로 올라온다. "최신 리포트" 링크는 항상 가장 최근 날짜를 연다.
+
 매 거래일 장 마감 후 KOSPI·KOSDAQ 전종목을 카테고리별로 점수화해 **TOP10**을 고르고,
 그 결과를 날마다 쌓아서 **순위 변화**와 **"다음날 들고 있었다면?" 성과**를 비교하는 학습용 프로젝트.
 
