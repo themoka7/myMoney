@@ -1,7 +1,7 @@
 """하루치 결과를 GitHub Release 본문용 마크다운으로 만든다."""
 from __future__ import annotations
 
-from . import config
+from . import config, flow
 
 NAVER = "https://finance.naver.com/item/main.naver?code={}"
 
@@ -70,6 +70,117 @@ def _followup_details(rows: list[dict]) -> list[str]:
             f"{flow} | {_pct(r['ret'])} | {'TOP10' if r['still_in'] else '이탈'} |"
         )
     return lines + ["", "</details>", ""]
+
+
+def _won(v: float | None, signed: bool = False) -> str:
+    if v is None:
+        return "–"
+    sign = "+" if signed and v > 0 else ""
+    if abs(v) >= 1e12:
+        return f"{sign}{v / 1e12:,.1f}조"
+    return f"{sign}{v / 1e8:,.0f}억"
+
+
+def _heat(h: float | None) -> str:
+    if h is None:
+        return "–"
+    mark = " 🔥" if h >= 1.5 else (" 🧊" if h <= 0.67 else "")
+    return f"{h:.1f}배{mark}"
+
+
+FLOW_INTRO = """> 💡 **쉽게 말하면** 오늘 시장에서 오간 돈(거래대금) 중 각 분야가 몇 %를 차지했는지. 비중이 크면 그쪽에 관심과 돈이 몰렸다는 뜻.
+>
+> **평소 대비**는 최근 20거래일 평균 비중과 비교한 배수다. 🔥 1.5배 이상 = 평소보다 확 몰림, 🧊 0.67배 이하 = 평소보다 썰렁.
+> **외국인 5일**은 외국인이 최근 5거래일간 산 돈 − 판 돈. 등락률은 회사 크기(시가총액)로 가중한 평균이다.
+>
+> ⚠️ 거래대금은 '사고판 양'이지 '들어온 돈'이 아니다. 급락할 때도 거래대금은 터진다. 그래서 등락률과 같이 봐야 한다."""
+
+
+def _flow_rows(flows: dict, names: list[str], date: str, label=lambda n: n) -> list[str]:
+    lines = ["| 분야 | 거래대금 | 시장 비중 | 평소 대비 | 오늘 | 5일 | 20일 | 외국인 5일 | 비중 추이 (20일) |",
+             "|---|--:|--:|--:|--:|--:|--:|--:|:-:|"]
+    for n in names:
+        m = flows[date][n]
+        rets = flow.series(flows, n, "ret", date)
+        shares = [x for x in flow.series(flows, n, "share", date)[-20:] if x is not None]
+        lines.append(
+            f"| {label(n)} | {_won(m['value'])} | {m['share'] * 100:.1f}% | {_heat(m.get('heat'))} | "
+            f"{_pct(m['ret'])} | {_pct(flow.compound(rets[-5:]))} | {_pct(flow.compound(rets[-20:]))} | "
+            f"{_won(m['foreign_5d'], signed=True)} | {_spark(shares)} |"
+        )
+    return lines
+
+
+def _forest_section(site: dict, date: str) -> list[str]:
+    mk = site.get("flows", {}).get("market", {})
+    if date not in mk or "전체" not in mk[date]:
+        return []
+    day = mk[date]
+    allm = day["전체"]
+    lines = ["## 🌳 시장 전체 — 숲부터 보자", "",
+             "> 💡 개별 종목(나무)을 보기 전에 오늘 시장 전체(숲)가 어땠는지. 시장 전체가 빠지는 날엔 좋은 종목도 같이 빠진다.", "",
+             "| 시장 | 등락 (시총가중) | 5일 | 20일 | 오른 종목 / 내린 종목 | 거래대금 | 평소 대비 | 외국인 5일 |",
+             "|---|--:|--:|--:|:-:|--:|--:|--:|"]
+    for n in ["전체", "KOSPI", "KOSDAQ"]:
+        if n not in day:
+            continue
+        m = day[n]
+        rets = flow.series(mk, n, "ret", date)
+        vals = [x for x in flow.series(mk, n, "value", date)[:-1][-config.FLOW_BASELINE_DAYS:] if x]
+        vheat = m["value"] / (sum(vals) / len(vals)) if vals else None
+        lines.append(
+            f"| {n} | {_pct(m['ret'])} | {_pct(flow.compound(rets[-5:]))} | {_pct(flow.compound(rets[-20:]))} | "
+            f"🔺{m['up']} / 🔻{m['down']} | {_won(m['value'])} | {_heat(vheat)} | {_won(m['foreign_5d'], signed=True)} |"
+        )
+    lines += ["", "<sub>평소 대비 = 최근 20거래일 평균 거래대금 대비. 오른/내린 종목 수는 전 기록일 종가 대비.</sub>", ""]
+    return lines
+
+
+def _headline(site: dict, date: str) -> list[str]:
+    flows = site.get("flows", {})
+    parts = []
+    mk = flows.get("market", {}).get(date, {})
+    if "KOSPI" in mk and mk["KOSPI"]["ret"] is not None:
+        parts.append(f"KOSPI {_pct(mk['KOSPI']['ret'])}")
+    if "KOSDAQ" in mk and mk["KOSDAQ"]["ret"] is not None:
+        parts.append(f"KOSDAQ {_pct(mk['KOSDAQ']['ret'])}")
+    if "전체" in mk and mk["전체"]["up"] + mk["전체"]["down"]:
+        a = mk["전체"]
+        parts.append(f"오른 종목 {a['up'] / (a['up'] + a['down']):.0%}")
+    th = flows.get("theme", {}).get(date, {})
+    if th:
+        top = max(th, key=lambda n: th[n]["share"])
+        parts.append(f"돈이 가장 몰린 테마 **{top}** (거래대금의 {th[top]['share']:.0%}, {_pct(th[top]['ret'])})")
+    sec = flows.get("sector", {}).get(date, {})
+    hot = [n for n in sec if sec[n].get("heat") and sec[n]["share"] >= 0.01]
+    if hot:
+        h = max(hot, key=lambda n: sec[n]["heat"])
+        parts.append(f"평소보다 돈이 몰린 섹터 **{h}** ({sec[h]['heat']:.1f}배)")
+    return [f"> 🌳 **오늘의 숲** · " + " · ".join(parts), ""] if parts else []
+
+
+def _flow_section(site: dict, date: str) -> list[str]:
+    flows = site.get("flows", {})
+    themes, sectors = flows.get("theme", {}), flows.get("sector", {})
+    if date not in themes and date not in sectors:
+        return []
+    out = ["## 💰 돈의 흐름 — 오늘 돈이 어디로 갔나", "", FLOW_INTRO, ""]
+    etfs = site.get("theme_etfs", {})
+    if date in themes and themes[date]:
+        names = sorted(themes[date], key=lambda n: -themes[date][n]["share"])
+        out += ["### 테마", "<sub>테마 = 대표 ETF가 담고 있는 종목 묶음. 종목이 여러 테마에 겹칠 수 있다.</sub>", ""]
+        out += _flow_rows(themes, names, date, label=lambda n: f"{n} <sub>{etfs.get(n, '')}</sub>")
+        out.append("")
+    if date in sectors and sectors[date]:
+        day = sectors[date]
+        top = sorted(day, key=lambda n: -day[n]["share"])[:10]
+        hot = sorted((n for n in day if day[n].get("heat") and day[n]["share"] >= 0.01),
+                     key=lambda n: -day[n]["heat"])[:5]
+        out += ["### 섹터 (KRX 업종) — 거래대금 비중 상위 10", ""] + _flow_rows(sectors, top, date) + [""]
+        if hot:
+            out += ["### 평소보다 돈이 몰린 섹터 TOP5", "<sub>시장 비중 1% 이상 중 '평소 대비' 배수가 큰 순</sub>", ""]
+            out += _flow_rows(sectors, hot, date) + [""]
+    return out
 
 
 def _cum(series: list[dict], key: str) -> float | None:
@@ -184,10 +295,14 @@ def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
         + f" · 누적 기록 {i + 1}일",
         "",
     ]
+    out = out[:1] + [""] + _headline(site, date) + out[2:]
+    out += _forest_section(site, date) + _flow_section(site, date)
+    out += ["## 🌱 종목 TOP10 — 이제 나무를 보자", "",
+            "> 숲(시장)과 돈의 흐름을 본 뒤에, 기준별로 점수가 높은 종목. 시장이 빠지는 날엔 TOP10도 같이 빠지는 게 보통이다.", ""]
     for cat, (label, desc) in config.CATEGORIES.items():
         items = day["categories"].get(cat, [])
         easy, what, caution = config.CATEGORY_GUIDE[cat]
-        out += [f"## {label}", f"> 💡 **쉽게 말하면** {easy}", ">",
+        out += [f"### {label}", f"> 💡 **쉽게 말하면** {easy}", ">",
                 f"> {what}", ">", f"> ⚠️ {caution}", ""]
         if not items:
             out += ["_데이터 없음_", ""]

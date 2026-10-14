@@ -130,7 +130,7 @@ def test_release_notes_contains_tables_and_performance(tmp_path):
     md = release_notes(site, "20261014")
     assert "전일 비교 기준 2026-10-13" in md
     for label, _ in config.CATEGORIES.values():
-        assert f"## {label}" in md
+        assert f"### {label}" in md
     assert "2일 누적" in md and "유니버스 평균" in md
 
 
@@ -204,3 +204,63 @@ def test_price_history_merges_snapshots_and_stored_prices():
     tops["d04"]["prices"] = {"A": [["d00", 0.5], ["d01", 999.0]]}
     h = track.price_history(tops, "d04", load=snaps.get, days=3)
     assert h["A"] == [["d01", 1.0], ["d02", 2.0], ["d03", 3.0]]  # 스냅샷 우선, 최근 3일만
+
+
+def test_flow_share_heat_and_weighted_return():
+    from mymoney import flow
+
+    def snap(close, value):
+        return pd.DataFrame({"close": close, "trading_value": value, "market_cap": [100.0, 300.0, 600.0],
+                             "foreign_net_5d": [1.0, 2.0, 3.0]}, index=pd.Index(["A", "B", "C"], name="ticker"))
+
+    snaps = {"d1": snap([10.0, 10.0, 10.0], [10.0, 10.0, 80.0]),
+             "d2": snap([11.0, 12.0, 10.0], [30.0, 30.0, 40.0])}
+    res = flow.compute(["d1", "d2"], snaps.get, {"semi": ["A", "B"], "other": ["C"]})
+    assert res["d1"]["semi"]["share"] == pytest.approx(0.2)
+    assert res["d1"]["semi"]["ret"] is None and res["d1"]["semi"]["heat"] is None
+    m = res["d2"]["semi"]
+    assert m["share"] == pytest.approx(0.6)
+    assert m["heat"] == pytest.approx(3.0)                    # 0.6 / 0.2
+    assert m["ret"] == pytest.approx((0.1 * 100 + 0.2 * 300) / 400)  # 시총 가중
+    assert m["foreign_5d"] == 3.0 and m["n"] == 2
+
+
+def test_release_notes_flow_section(tmp_path):
+    import json as _json
+    from mymoney.report import release_notes
+
+    snap_dir, top_dir, meta = tmp_path / "s", tmp_path / "t", tmp_path / "m"
+    for i, d in enumerate(["20261012", "20261013"]):
+        s = make_snap(40 + i, n=80)
+        s["market_cap"], s["trading_value"] = 1e12, 1e10
+        sc = score(s)
+        track.save_day(d, s, top_n(sc), len(sc), snap_dir=snap_dir, top_dir=top_dir)
+    meta.mkdir()
+    pd.Series(["전기·전자"] * 40 + ["제약"] * 40, index=pd.Index(s.index, name="ticker"),
+              name="sector").to_csv(meta / "sectors.csv")
+    (meta / "themes.json").write_text(_json.dumps(
+        {"반도체": {"etf": "091160", "etf_name": "KODEX 반도체", "tickers": list(s.index[:15])}}), encoding="utf-8")
+    site = track.build_site(top_dir=top_dir, snap_dir=snap_dir, site_file=tmp_path / "h.json", meta_dir=meta)
+    md = release_notes(site, "20261013")
+    assert "돈의 흐름" in md and "KODEX 반도체" in md and "| 전기·전자 |" in md
+    assert md.index("시장 전체") < md.index("돈의 흐름") < md.index("### 가치")
+    assert "오늘의 숲" in md and "| KOSPI |" in md
+
+
+def test_site_json_has_no_nan_even_with_missing_names(tmp_path):
+    import json as _json
+
+    snap_dir, top_dir, site = tmp_path / "s", tmp_path / "t", tmp_path / "h.json"
+    for i, d in enumerate(["20261012", "20261013"]):
+        s = make_snap(50 + i, n=80)
+        s["market_cap"], s["trading_value"] = 1e12, 1e10
+        s["name"] = s["name"].astype(object)
+        s.iloc[:, s.columns.get_loc("name")] = np.nan  # 이름이 전부 없는 극단적 경우
+        sc = score(s)
+        track.save_day(d, s, top_n(sc), len(sc), snap_dir=snap_dir, top_dir=top_dir)
+    track.build_site(top_dir=top_dir, snap_dir=snap_dir, site_file=site, meta_dir=tmp_path / "m")
+    text = site.read_text(encoding="utf-8")
+    assert "NaN" not in text
+    data = _json.loads(text)
+    first = data["days"]["20261013"]["categories"]["value"][0]
+    assert first["name"] == first["ticker"]

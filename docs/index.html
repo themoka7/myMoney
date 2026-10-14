@@ -135,7 +135,7 @@ function render() {
   }).join("");
   const dropped = (day.dropped[cat] || []).map((x) => `${x.name}(${x.prev_rank}위)`).join(", ");
 
-  $("#content").innerHTML = `
+  $("#content").innerHTML = forestHtml() + `
     <section class="card">
       <h2>${meta.label} TOP${DATA.top_n} · ${fmtDate(state.date)}</h2>
       <p class="desc">${meta.desc}</p>
@@ -160,6 +160,77 @@ function render() {
     </div>`;
   drawRank(cat);
   drawPerf(cat);
+  drawFlow();
+}
+
+const fmtWon = (v) => v == null ? "–" : Math.abs(v) >= 1e12 ? (v / 1e12).toFixed(1) + "조" : Math.round(v / 1e8).toLocaleString() + "억";
+const sgn = (v, f) => v == null ? "–" : `<span class="${v >= 0 ? "up" : "down"}">${v > 0 ? "+" : ""}${f(v)}</span>`;
+
+function forestHtml() {
+  const F = DATA.flows || {}, mk = (F.market || {})[state.date], th = (F.theme || {})[state.date];
+  if (!mk) return "";
+  const rows = ["전체", "KOSPI", "KOSDAQ"].filter((n) => mk[n]).map((n) => {
+    const m = mk[n];
+    return `<tr><td class="l">${n}</td><td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td>
+      <td>🔺${m.up} / 🔻${m.down}</td><td>${fmtWon(m.value)}</td><td>${sgn(m.foreign_5d, fmtWon)}</td></tr>`;
+  }).join("");
+  const trows = th ? Object.entries(th).sort((a, b) => b[1].share - a[1].share).map(([n, m]) => {
+    const heat = m.heat == null ? "–" : m.heat.toFixed(1) + "배" + (m.heat >= 1.5 ? " 🔥" : m.heat <= 0.67 ? " 🧊" : "");
+    return `<tr><td class="l">${n}</td><td>${(m.share * 100).toFixed(1)}%</td><td>${heat}</td>
+      <td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td><td>${sgn(m.foreign_5d, fmtWon)}</td></tr>`;
+  }).join("") : "";
+  return `
+    <section class="card">
+      <h2>🌳 시장 전체 — 숲부터</h2>
+      <p class="desc">시장 전체가 빠지는 날엔 좋은 종목도 같이 빠진다. 등락은 시가총액 가중.</p>
+      <div class="tablewrap"><table><thead><tr><th class="l">시장</th><th>등락</th><th>오른/내린 종목</th><th>거래대금</th><th>외국인 5일</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    </section>
+    ${th ? `<div class="grid">
+      <section class="card">
+        <h2>💰 테마별 돈의 흐름</h2>
+        <p class="desc">시장 비중 = 오늘 전체 거래대금 중 그 테마 몫. 평소 대비 = 최근 20일 평균 비중 대비 배수.</p>
+        <div class="tablewrap"><table><thead><tr><th class="l">테마</th><th>시장 비중</th><th>평소 대비</th><th>오늘</th><th>외국인 5일</th></tr></thead>
+        <tbody>${trows}</tbody></table></div>
+      </section>
+      <section class="card">
+        <h2>테마별 거래대금 비중 추이</h2>
+        <p class="desc">선이 올라가면 그 테마로 돈이 몰리는 중. 범례를 눌러 테마를 끄고 켤 수 있다.</p>
+        <div class="chartbox"><canvas id="flowChart"></canvas></div>
+      </section>
+    </div>` : ""}`;
+}
+
+function drawFlow() {
+  charts.flow?.destroy();
+  const el = $("#flowChart"), th = (DATA.flows || {}).theme || {};
+  if (!el) return;
+  const dates = Object.keys(th).sort().filter((d) => d <= state.date).slice(-60);
+  const last = th[state.date] || {};
+  const names = Object.keys(last).sort((a, b) => last[b].share - last[a].share);
+  const ax = axisColors();
+  charts.flow = new Chart(el, {
+    type: "line",
+    data: {
+      labels: dates.map((d) => d.slice(4, 6) + "/" + d.slice(6)),
+      datasets: names.map((n, i) => ({
+        label: n, data: dates.map((d) => th[d][n] ? th[d][n].share * 100 : null),
+        borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length],
+        pointRadius: 0, borderWidth: 2, tension: 0.2, hidden: i >= 6,
+      })),
+    },
+    options: {
+      maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      scales: {
+        y: { ticks: { color: ax.color, callback: (v) => v + "%" }, grid: { color: ax.grid } },
+        x: { ticks: { color: ax.color }, grid: { display: false } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { color: ax.color, boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(1)}%` } },
+      },
+    },
+  });
 }
 
 function chg5(it) {

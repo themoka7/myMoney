@@ -1,6 +1,7 @@
 """사용법:
     python -m mymoney run [--date YYYYMMDD]   # 수집 → 점수 → 저장 → 대시보드 데이터 갱신
     python -m mymoney backfill --days 20      # 최근 20영업일 채우기 (있는 날은 건너뜀)
+    python -m mymoney meta                    # 섹터 분류·테마 ETF 구성만 갱신
     python -m mymoney build                   # 저장된 데이터로 대시보드 데이터만 재생성
     python -m mymoney show [--date YYYYMMDD]  # 저장된 TOP N을 터미널에 출력
     python -m mymoney notes [--date YYYYMMDD] [--out FILE]  # Release 본문용 마크다운
@@ -31,11 +32,23 @@ def _collect_day(date: str, force: bool) -> bool:
     return True
 
 
+def _refresh_meta(date: str) -> None:
+    """섹터 분류·테마 ETF 구성을 갱신한다. 실패해도 기존 파일로 계속 간다."""
+    from . import flow
+    from .collect import sector_map, theme_members
+
+    try:
+        flow.save_meta(sector_map(date), theme_members(date))
+    except Exception as e:
+        print(f"섹터/테마 구성 갱신 실패 (기존 파일 사용): {e}", file=sys.stderr)
+
+
 def cmd_run(args) -> int:
     from .collect import latest_business_day
 
     date = latest_business_day(args.date)
     _collect_day(date, args.force)
+    _refresh_meta(date)
     track.build_site()
     _print_day(date)
     return 0
@@ -55,10 +68,19 @@ def cmd_backfill(args) -> int:
         except Exception as e:  # 하루 실패가 전체를 막지 않게
             failed.append(d)
             print(f"{d}: 실패 — {e}", file=sys.stderr)
+    _refresh_meta(end)
     track.build_site()
     _print_day(end)
     if failed:
         print(f"\n실패 {len(failed)}일: {' '.join(failed)} — 다시 실행하면 빠진 날만 채운다", file=sys.stderr)
+    return 0
+
+
+def cmd_meta(args) -> int:
+    from .collect import latest_business_day
+
+    _refresh_meta(latest_business_day(args.date))
+    track.build_site()
     return 0
 
 
@@ -122,6 +144,8 @@ def main(argv=None) -> int:
     b.add_argument("--end")
     b.add_argument("--force", action="store_true")
     sub.add_parser("build")
+    m = sub.add_parser("meta")
+    m.add_argument("--date")
     s = sub.add_parser("show")
     s.add_argument("--date")
     n = sub.add_parser("notes")
@@ -134,6 +158,8 @@ def main(argv=None) -> int:
         return cmd_backfill(args)
     if args.cmd == "build":
         return cmd_build(args)
+    if args.cmd == "meta":
+        return cmd_meta(args)
     if args.cmd == "notes":
         return cmd_notes(args)
     _print_day(args.date)

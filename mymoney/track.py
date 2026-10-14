@@ -7,6 +7,7 @@ docs/data/history.json          대시보드용 집계 (매번 위 파일들로�
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +23,17 @@ SITE_FILE = ROOT / "docs" / "data" / "history.json"
 
 # ---------- 저장 ----------
 
+def clean_json(obj):
+    """NaN/Inf는 JSON 표준이 아니라 브라우저가 못 읽는다 → None으로."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: clean_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [clean_json(v) for v in obj]
+    return obj
+
+
 def save_day(date: str, snap: pd.DataFrame, top: dict, universe_size: int,
              snap_dir: Path = SNAP_DIR, top_dir: Path = TOP_DIR,
              prices: dict | None = None) -> None:
@@ -32,15 +44,21 @@ def save_day(date: str, snap: pd.DataFrame, top: dict, universe_size: int,
     if prices is not None:
         payload["prices"] = prices  # TOP N 종목의 직전 거래일 종가들
     (top_dir / f"{date}.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+        json.dumps(clean_json(payload), ensure_ascii=False, indent=1, allow_nan=False), encoding="utf-8"
     )
 
 
 def load_tops(top_dir: Path = TOP_DIR) -> dict[str, dict]:
-    return {
-        p.stem: json.loads(p.read_text(encoding="utf-8"))
-        for p in sorted(top_dir.glob("*.json"))
-    }
+    tops = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in sorted(top_dir.glob("*.json"))}
+    # 예전에 종목명 없이(NaN) 저장된 항목은 다른 날 이름이나 종목코드로 메운다
+    names = {it["ticker"]: it["name"] for day in tops.values() for items in day["categories"].values()
+             for it in items if isinstance(it.get("name"), str)}
+    for day in tops.values():
+        for items in day["categories"].values():
+            for it in items:
+                if not isinstance(it.get("name"), str):
+                    it["name"] = names.get(it["ticker"], it["ticker"])
+    return tops
 
 
 def load_snapshot(date: str, snap_dir: Path = SNAP_DIR) -> pd.DataFrame | None:
@@ -204,7 +222,10 @@ def followup(tops: dict[str, dict], date: str, load=load_snapshot,
 # ---------- 대시보드 데이터 ----------
 
 def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
-               site_file: Path = SITE_FILE) -> dict:
+               site_file: Path = SITE_FILE, meta_dir: Path | None = None) -> dict:
+    from . import flow
+
+    meta_dir = meta_dir or flow.META_DIR
     tops = load_tops(top_dir)
     cache: dict[str, pd.DataFrame | None] = {}
 
@@ -226,8 +247,12 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
         "performance": performance(tops, load=load),
     }
     data["prices"] = {d: price_history(tops, d, load=load) for d in tops}
+    groups = {"market": flow.market_groups(load(max(tops)) if tops else None), **flow.load_groups(meta_dir)}
+    data["flows"] = {kind: flow.compute(list(tops), load, members) for kind, members in groups.items()}
+    data["theme_etfs"] = flow.theme_labels(meta_dir)
     if tops:
         data["followup"] = followup(tops, max(tops), load=load)
     site_file.parent.mkdir(parents=True, exist_ok=True)
-    site_file.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    site_file.write_text(json.dumps(clean_json(data), ensure_ascii=False, separators=(",", ":"), allow_nan=False),
+                         encoding="utf-8")
     return data

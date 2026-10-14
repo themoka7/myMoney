@@ -100,7 +100,14 @@ def _market_snapshot(stock, date: str, market: str) -> pd.DataFrame:
     foreign = stock.get_market_net_purchases_of_equities(start, date, market, "외국인")
 
     df = pd.DataFrame(index=cap.index)
-    df["name"] = short["종목명"]
+    # 종목명: 기간 등락률 표에는 최근 상장 종목이 빠질 수 있어 여러 출처를 겹쳐 쓴다
+    df["name"] = short["종목명"].reindex(df.index).combine_first(long_["종목명"].reindex(df.index))
+    df["name"] = df["name"].combine_first(foreign["종목명"].reindex(df.index))
+    for t in df.index[df["name"].isna()]:
+        try:
+            df.loc[t, "name"] = stock.get_market_ticker_name(t)
+        except Exception:
+            df.loc[t, "name"] = t
     df["market"] = market
     df["open"] = ohlcv["시가"]
     df["close"] = cap["종가"]
@@ -148,4 +155,34 @@ def recent_closes(date: str, tickers: list[str], days: int = config.PRICE_HISTOR
         for t in tickers:
             if t in close.index and pd.notna(close[t]):
                 out[t].append([d, float(close[t])])
+    return out
+
+
+def sector_map(date: str) -> pd.Series:
+    """종목코드 -> KRX 업종명."""
+    stock = _stock()
+    parts = []
+    for m in MARKETS:
+        df = stock.get_market_sector_classifications(date, m)
+        df.index = df.index.astype(str).str.zfill(6)
+        parts.append(df["업종명"])
+    out = pd.concat(parts)
+    out.index.name = "ticker"
+    return out[~out.index.duplicated()]
+
+
+def theme_members(date: str) -> dict[str, dict]:
+    """테마명 -> {etf, etf_name, tickers}. 실패한 테마는 경고만 하고 뺀다."""
+    stock = _stock()
+    out = {}
+    for theme, etf in config.THEME_ETFS.items():
+        try:
+            pdf = stock.get_etf_portfolio_deposit_file(etf, date)
+            name = stock.get_etf_ticker_name(etf)
+        except Exception as e:
+            print(f"  테마 '{theme}'({etf}) 구성 조회 실패: {e}", file=sys.stderr)
+            continue
+        tickers = [t for t in pdf.index.astype(str) if t.isdigit() and len(t) == 6]
+        out[theme] = {"etf": etf, "etf_name": str(name), "tickers": tickers}
+        print(f"  테마 {theme}: {name} ({len(tickers)}종목)")
     return out
