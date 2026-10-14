@@ -264,3 +264,26 @@ def test_site_json_has_no_nan_even_with_missing_names(tmp_path):
     data = _json.loads(text)
     first = data["days"]["20261013"]["categories"]["value"][0]
     assert first["name"] == first["ticker"]
+
+
+def test_members_sorted_by_value_with_returns():
+    from mymoney import flow
+
+    def snap(close, value):
+        return pd.DataFrame({"name": ["a", "b", "c"], "close": close, "trading_value": value,
+                             "foreign_net_5d": [1.0, -2.0, 0.0]}, index=pd.Index(["A", "B", "C"], name="ticker"))
+
+    prev, cur = snap([10.0, 10.0, 10.0], [1, 1, 1]), snap([11.0, 9.0, 10.0], [10.0, 30.0, 0.0])
+    rows = flow.members(cur, prev, None, ["A", "B", "C", "Z"])
+    assert [r["ticker"] for r in rows] == ["B", "A"]  # 거래 없는 C, 없는 Z 제외
+    assert rows[0]["ret"] == pytest.approx(-0.1) and rows[0]["weight"] == pytest.approx(0.75)
+    assert rows[0]["ret5"] is None
+
+
+def test_release_notes_stays_under_github_limit(monkeypatch):
+    from mymoney import report
+
+    site = {"days": {"d": {"universe_size": 1, "categories": {}, "dropped": {}}}, "dates": ["d"],
+            "performance": {}, "flows": {}}
+    monkeypatch.setattr(report, "BODY_LIMIT", 500)
+    assert len(report.release_notes(site, "d")) <= 500

@@ -250,6 +250,7 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
     groups = {"market": flow.market_groups(load(max(tops)) if tops else None), **flow.load_groups(meta_dir)}
     data["flows"] = {kind: flow.compute(list(tops), load, members) for kind, members in groups.items()}
     data["theme_etfs"] = flow.theme_labels(meta_dir)
+    data["members"] = flow.members_by_date(list(tops), load, groups, data["flows"])
     if tops:
         data["followup"] = followup(tops, max(tops), load=load)
     site_file.parent.mkdir(parents=True, exist_ok=True)

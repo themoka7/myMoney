@@ -54,6 +54,10 @@ def _price_details(items: list[dict], prices: dict, date: str) -> list[str]:
     return lines + ["", "</details>", ""]
 
 
+FOLLOWUP_ROWS = 25
+BODY_LIMIT = 124_000  # GitHub Release 본문 최대 125,000자
+
+
 def _followup_details(rows: list[dict]) -> list[str]:
     if not rows:
         return []
@@ -61,7 +65,8 @@ def _followup_details(rows: list[dict]) -> list[str]:
              "처음 TOP10에 든 날의 종가에 샀다고 치고, 그 뒤 매일 종가를 따라간 기록.", "",
              "| 종목 | 최초 선정 | 선정일 종가 | 이후 종가 흐름 | 수익률 | 지금 |",
              "|---|---|--:|---|--:|:-:|"]
-    for r in rows:
+    shown = rows[:FOLLOWUP_ROWS]
+    for r in shown:
         flow = " → ".join(f"{c:,.0f}" for _, c in r["path"][-8:]) or "–"
         if len(r["path"]) > 8:
             flow = "… → " + flow
@@ -69,6 +74,8 @@ def _followup_details(rows: list[dict]) -> list[str]:
             f"| [{r['name']}]({NAVER.format(r['ticker'])}) | {_md(r['first_date'])} | {r['first_close']:,.0f} | "
             f"{flow} | {_pct(r['ret'])} | {'TOP10' if r['still_in'] else '이탈'} |"
         )
+    if len(rows) > len(shown):
+        lines.append(f"| _외 {len(rows) - len(shown)}개 (더 오래전 선정)_ | | | | | |")
     return lines + ["", "</details>", ""]
 
 
@@ -159,7 +166,26 @@ def _headline(site: dict, date: str) -> list[str]:
     return [f"> 🌳 **오늘의 숲** · " + " · ".join(parts), ""] if parts else []
 
 
-def _flow_section(site: dict, date: str) -> list[str]:
+def _share(v: float | None) -> str:
+    return "–" if v is None else f"{v:.0%}"
+
+
+def _member_details(title: str, rows: list[dict], note: str = "") -> list[str]:
+    if not rows:
+        return []
+    lines = [f"<details><summary><b>{title}</b> — 종목 {len(rows)}개 펼쳐 보기{note}</summary>", "",
+             "| 종목 | 종가 | 오늘 | 5일 | 거래대금 | 분야 내 거래 비중 | 외국인 5일 |",
+             "|---|--:|--:|--:|--:|--:|--:|"]
+    for r in rows:
+        lines.append(
+            f"| [{r['name']}]({NAVER.format(r['ticker'])}) | {r['close']:,.0f} | {_pct(r['ret'])} | {_pct(r['ret5'])} | "
+            f"{_won(r['value'])} | {_share(r['weight'])} | "
+            f"{_won(r['foreign_5d'], signed=True)} |"
+        )
+    return lines + ["", "</details>", ""]
+
+
+def _flow_section(site: dict, date: str, level: int = 0) -> list[str]:
     flows = site.get("flows", {})
     themes, sectors = flows.get("theme", {}), flows.get("sector", {})
     if date not in themes and date not in sectors:
@@ -171,15 +197,24 @@ def _flow_section(site: dict, date: str) -> list[str]:
         out += ["### 테마", "<sub>테마 = 대표 ETF가 담고 있는 종목 묶음. 종목이 여러 테마에 겹칠 수 있다.</sub>", ""]
         out += _flow_rows(themes, names, date, label=lambda n: f"{n} <sub>{etfs.get(n, '')}</sub>")
         out.append("")
+        mem = site.get("members", {}).get(date, {}).get("theme", {})
+        for n in names:
+            out += _member_details(n, mem.get(n, []))
     if date in sectors and sectors[date]:
         day = sectors[date]
         top = sorted(day, key=lambda n: -day[n]["share"])[:10]
         hot = sorted((n for n in day if day[n].get("heat") and day[n]["share"] >= 0.01),
                      key=lambda n: -day[n]["heat"])[:5]
+        smem = site.get("members", {}).get(date, {}).get("sector", {})
         out += ["### 섹터 (KRX 업종) — 거래대금 비중 상위 10", ""] + _flow_rows(sectors, top, date) + [""]
+        for n in top if level < 1 else []:
+            out += _member_details(n, smem.get(n, []), " (거래대금 상위)")
         if hot:
             out += ["### 평소보다 돈이 몰린 섹터 TOP5", "<sub>시장 비중 1% 이상 중 '평소 대비' 배수가 큰 순</sub>", ""]
             out += _flow_rows(sectors, hot, date) + [""]
+            for n in hot if level < 1 else []:
+                if n not in top:
+                    out += _member_details(n, smem.get(n, []), " (거래대금 상위)")
     return out
 
 
@@ -271,7 +306,16 @@ GLOSSARY = """<details>
 
 
 def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
-    """site: track.build_site() 반환값. follow: track.followup() 결과."""
+    """Release 본문. GitHub 한도를 넘으면 덜 중요한 펼치기부터 뺀다."""
+    for level in range(4):
+        text = _render(site, date, follow, level)
+        if len(text) <= BODY_LIMIT:
+            return text
+    return text[:BODY_LIMIT - 200] + "\n\n_(본문이 길어 잘렸습니다. 전체는 첨부 JSON·대시보드 참고)_"
+
+
+def _render(site: dict, date: str, follow: dict | None, level: int) -> str:
+    """level 0: 전부 · 1: 섹터 구성 종목 생략 · 2: +선정 후 추적 생략 · 3: +과거 종가 표 생략."""
     day = site["days"][date]
     prices = site.get("prices", {}).get(date, {})
     follow = follow or {}
@@ -296,7 +340,7 @@ def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
         "",
     ]
     out = out[:1] + [""] + _headline(site, date) + out[2:]
-    out += _forest_section(site, date) + _flow_section(site, date)
+    out += _forest_section(site, date) + _flow_section(site, date, level)
     out += ["## 🌱 종목 TOP10 — 이제 나무를 보자", "",
             "> 숲(시장)과 돈의 흐름을 본 뒤에, 기준별로 점수가 높은 종목. 시장이 빠지는 날엔 TOP10도 같이 빠지는 게 보통이다.", ""]
     for cat, (label, desc) in config.CATEGORIES.items():
@@ -315,7 +359,8 @@ def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
                 f"{it['market']} | {it['score']:.1f} | {it['close']:,.0f} | "
                 f"{_spark(series(it))} | {_chg(it, 5)} | {_chg(it, 20)} | {it['streak']}일 |"
             )
-        out += [""] + _price_details(items, prices, date) + _followup_details(follow.get(cat, []))
+        out += [""] + (_price_details(items, prices, date) if level < 3 else []) \
+            + (_followup_details(follow.get(cat, [])) if level < 2 else [])
         dropped = day["dropped"].get(cat, [])
         if dropped:
             out += ["", "이탈: " + ", ".join(f"{x['name']}({x['prev_rank']}위)" for x in dropped)]

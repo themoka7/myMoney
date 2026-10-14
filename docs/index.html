@@ -31,7 +31,7 @@ select, button { font: inherit; color: var(--text); background: var(--card); bor
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
 .card h2 { font-size: 15px; margin: 0 0 4px; }
 .card .desc { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 .tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -41,6 +41,13 @@ td.l, th.l { text-align: left; }
 .up { color: var(--up); } .down { color: var(--down); } .new { color: var(--new); font-weight: 600; }
 .code { color: var(--muted); font-size: 12px; margin-left: 4px; }
 .guide { background: var(--chip); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin: 0 0 12px; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--chip); }
+.caret { color: var(--muted); display: inline-block; width: 1em; }
+tr.members > td { padding: 4px 0 12px 12px; background: var(--chip); }
+table.sub { font-size: 13px; }
+table.sub th, table.sub td { padding: 5px 6px; }
+a { color: inherit; }
 .dropped { color: var(--muted); font-size: 13px; margin-top: 10px; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px; }
 .stat { background: var(--chip); border-radius: 8px; padding: 8px 10px; }
@@ -161,6 +168,27 @@ function render() {
   drawRank(cat);
   drawPerf(cat);
   drawFlow();
+  document.querySelectorAll("tr[data-theme]").forEach((tr) => { tr.onclick = () => toggleMembers(tr); });
+}
+
+function toggleMembers(tr) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("members")) {
+    next.remove(); tr.querySelector(".caret").textContent = "▸"; return;
+  }
+  const rows = (((DATA.members || {})[state.date] || {}).theme || {})[tr.dataset.theme] || [];
+  const pc = (v) => sgn(v, (x) => (x * 100).toFixed(2) + "%");
+  const body = rows.length ? rows.map((r) => `<tr><td class="l"><a href="https://finance.naver.com/item/main.naver?code=${r.ticker}" target="_blank" rel="noopener">${r.name}</a></td>
+      <td>${Math.round(r.close).toLocaleString()}</td><td>${pc(r.ret)}</td><td>${pc(r.ret5)}</td>
+      <td>${fmtWon(r.value)}</td><td>${r.weight == null ? "–" : Math.round(r.weight * 100) + "%"}</td><td>${sgn(r.foreign_5d, fmtWon)}</td></tr>`).join("")
+    : `<tr><td class="l" colspan="7">이 날짜의 구성 종목 데이터가 없습니다</td></tr>`;
+  const row = document.createElement("tr");
+  row.className = "members";
+  row.innerHTML = `<td colspan="5"><div class="tablewrap"><table class="sub">
+    <thead><tr><th class="l">종목</th><th>종가</th><th>오늘</th><th>5일</th><th>거래대금</th><th>테마 내 비중</th><th>외국인 5일</th></tr></thead>
+    <tbody>${body}</tbody></table></div></td>`;
+  tr.after(row);
+  tr.querySelector(".caret").textContent = "▾";
 }
 
 const fmtWon = (v) => v == null ? "–" : Math.abs(v) >= 1e12 ? (v / 1e12).toFixed(1) + "조" : Math.round(v / 1e8).toLocaleString() + "억";
@@ -176,7 +204,7 @@ function forestHtml() {
   }).join("");
   const trows = th ? Object.entries(th).sort((a, b) => b[1].share - a[1].share).map(([n, m]) => {
     const heat = m.heat == null ? "–" : m.heat.toFixed(1) + "배" + (m.heat >= 1.5 ? " 🔥" : m.heat <= 0.67 ? " 🧊" : "");
-    return `<tr><td class="l">${n}</td><td>${(m.share * 100).toFixed(1)}%</td><td>${heat}</td>
+    return `<tr class="clickable" data-theme="${n}" title="눌러서 구성 종목 보기"><td class="l"><span class="caret">▸</span> ${n}</td><td>${(m.share * 100).toFixed(1)}%</td><td>${heat}</td>
       <td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td><td>${sgn(m.foreign_5d, fmtWon)}</td></tr>`;
   }).join("") : "";
   return `
@@ -186,10 +214,10 @@ function forestHtml() {
       <div class="tablewrap"><table><thead><tr><th class="l">시장</th><th>등락</th><th>오른/내린 종목</th><th>거래대금</th><th>외국인 5일</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     </section>
-    ${th ? `<div class="grid">
+    ${th ? `<div>
       <section class="card">
         <h2>💰 테마별 돈의 흐름</h2>
-        <p class="desc">시장 비중 = 오늘 전체 거래대금 중 그 테마 몫. 평소 대비 = 최근 20일 평균 비중 대비 배수.</p>
+        <p class="desc">시장 비중 = 오늘 전체 거래대금 중 그 테마 몫. 평소 대비 = 최근 20일 평균 비중 대비 배수. <b>테마를 누르면 구성 종목이 펼쳐진다.</b></p>
         <div class="tablewrap"><table><thead><tr><th class="l">테마</th><th>시장 비중</th><th>평소 대비</th><th>오늘</th><th>외국인 5일</th></tr></thead>
         <tbody>${trows}</tbody></table></div>
       </section>

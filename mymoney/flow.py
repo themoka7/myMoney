@@ -123,3 +123,55 @@ def compound(vals: list[float | None]) -> float | None:
     for v in vals:
         acc *= 1 + v
     return acc - 1
+
+
+def members(snap: pd.DataFrame, prev: pd.DataFrame | None, prev5: pd.DataFrame | None,
+            tickers: list[str], limit: int | None = None) -> list[dict]:
+    """그룹 구성 종목별 오늘 모습. 거래대금 큰 순."""
+    idx = snap.index.intersection(tickers)
+    g = snap.loc[idx]
+    g = g[g["trading_value"] > 0].sort_values("trading_value", ascending=False)
+    total = g["trading_value"].sum()
+    if limit:
+        g = g.head(limit)
+
+    def chg(base):
+        if base is None:
+            return {}
+        r = g["close"] / base["close"].reindex(g.index) - 1
+        return {t: float(v) for t, v in r.items() if pd.notna(v) and abs(v) != float("inf")}
+
+    r1, r5 = chg(prev), chg(prev5)
+    return [{
+        "ticker": t,
+        "name": row["name"] if isinstance(row["name"], str) else t,
+        "close": float(row["close"]),
+        "ret": r1.get(t),
+        "ret5": r5.get(t),
+        "value": float(row["trading_value"]),
+        "weight": float(row["trading_value"] / total) if total else None,
+        "foreign_5d": float(row["foreign_net_5d"]) if "foreign_net_5d" in row and pd.notna(row["foreign_net_5d"]) else None,
+    } for t, row in g.iterrows()]
+
+
+def members_by_date(dates: list[str], load, groups: dict[str, dict[str, list[str]]],
+                    flows: dict[str, dict], keep_days: int = 60, sector_top: int = 10,
+                    sector_limit: int = 15) -> dict[str, dict]:
+    """{date: {"theme": {이름: [종목...]}, "sector": {...}}}. 섹터는 비중 상위 sector_top개만, 종목은 sector_limit개까지."""
+    ordered = [d for d in sorted(dates) if load(d) is not None]
+    out = {}
+    for i, d in enumerate(ordered):
+        if i < len(ordered) - keep_days:
+            continue
+        snap = load(d)
+        prev = load(ordered[i - 1]) if i >= 1 else None
+        prev5 = load(ordered[i - 5]) if i >= 5 else None
+        day = {"theme": {n: members(snap, prev, prev5, t) for n, t in groups.get("theme", {}).items()}}
+        sec_day = flows.get("sector", {}).get(d, {})
+        top = sorted(sec_day, key=lambda n: -sec_day[n]["share"])[:sector_top]
+        hot = sorted((n for n in sec_day if sec_day[n].get("heat") and sec_day[n]["share"] >= 0.01),
+                     key=lambda n: -sec_day[n]["heat"])[:5]
+        day["sector"] = {n: members(snap, prev, prev5, groups["sector"][n], limit=sector_limit)
+                         for n in dict.fromkeys(top + hot) if n in groups.get("sector", {})}
+        out[d] = day
+    return out
