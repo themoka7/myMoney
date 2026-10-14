@@ -126,14 +126,19 @@ def compound(vals: list[float | None]) -> float | None:
 
 
 def members(snap: pd.DataFrame, prev: pd.DataFrame | None, prev5: pd.DataFrame | None,
-            tickers: list[str], limit: int | None = None) -> list[dict]:
-    """그룹 구성 종목별 오늘 모습. 거래대금 큰 순."""
+            tickers: list[str], limit: int | None = None,
+            history: list[pd.DataFrame] | None = None) -> list[dict]:
+    """그룹 구성 종목별 오늘 모습. 거래대금 큰 순.
+
+    history: 오늘 이전 스냅샷들(오래된 순). 평소 거래대금(최근 20일 평균)과 5일 거래대금 합에 쓴다.
+    """
     idx = snap.index.intersection(tickers)
     g = snap.loc[idx]
     g = g[g["trading_value"] > 0].sort_values("trading_value", ascending=False)
     total = g["trading_value"].sum()
     if limit:
         g = g.head(limit)
+    history = history or []
 
     def chg(base):
         if base is None:
@@ -141,22 +146,42 @@ def members(snap: pd.DataFrame, prev: pd.DataFrame | None, prev5: pd.DataFrame |
         r = g["close"] / base["close"].reindex(g.index) - 1
         return {t: float(v) for t, v in r.items() if pd.notna(v) and abs(v) != float("inf")}
 
+    def past_values(n):
+        cols = [h["trading_value"].reindex(g.index) for h in history[-n:]]
+        return pd.concat(cols, axis=1) if cols else pd.DataFrame(index=g.index)
+
     r1, r5 = chg(prev), chg(prev5)
-    return [{
-        "ticker": t,
-        "name": row["name"] if isinstance(row["name"], str) else t,
-        "close": float(row["close"]),
-        "ret": r1.get(t),
-        "ret5": r5.get(t),
-        "value": float(row["trading_value"]),
-        "weight": float(row["trading_value"] / total) if total else None,
-        "foreign_5d": float(row["foreign_net_5d"]) if "foreign_net_5d" in row and pd.notna(row["foreign_net_5d"]) else None,
-    } for t, row in g.iterrows()]
+    base = past_values(config.FLOW_BASELINE_DAYS).mean(axis=1)            # 평소 하루 거래대금
+    v5 = past_values(config.FOREIGN_LOOKBACK_BUSINESS_DAYS - 1).sum(axis=1) + g["trading_value"]  # 5일 거래대금
+
+    def num(v):
+        return float(v) if pd.notna(v) and abs(v) != float("inf") else None
+
+    rows = []
+    for t, row in g.iterrows():
+        cap, val = row.get("market_cap"), row["trading_value"]
+        f5 = num(row["foreign_net_5d"]) if "foreign_net_5d" in row else None
+        rows.append({
+            "ticker": t,
+            "name": row["name"] if isinstance(row["name"], str) else t,
+            "close": float(row["close"]),
+            "ret": r1.get(t),
+            "ret5": r5.get(t),
+            "value": float(val),
+            "weight": float(val / total) if total else None,
+            "foreign_5d": f5,
+            "market_cap": num(cap),
+            "turnover": num(val / cap) if cap else None,                       # 하루 손바뀜 비율
+            "value_heat": num(val / base[t]) if base.get(t) else None,         # 평소 대비 거래대금 배수
+            "foreign_vs_value": num(f5 / v5[t]) if f5 is not None and v5.get(t) else None,
+            "foreign_vs_cap": num(f5 / cap) if f5 is not None and cap else None,
+        })
+    return rows
 
 
 def members_by_date(dates: list[str], load, groups: dict[str, dict[str, list[str]]],
                     flows: dict[str, dict], keep_days: int = 60, sector_top: int = 10,
-                    sector_limit: int = 15) -> dict[str, dict]:
+                    sector_limit: int = 10) -> dict[str, dict]:
     """{date: {"theme": {이름: [종목...]}, "sector": {...}}}. 섹터는 비중 상위 sector_top개만, 종목은 sector_limit개까지."""
     ordered = [d for d in sorted(dates) if load(d) is not None]
     out = {}
@@ -166,12 +191,14 @@ def members_by_date(dates: list[str], load, groups: dict[str, dict[str, list[str
         snap = load(d)
         prev = load(ordered[i - 1]) if i >= 1 else None
         prev5 = load(ordered[i - 5]) if i >= 5 else None
-        day = {"theme": {n: members(snap, prev, prev5, t) for n, t in groups.get("theme", {}).items()}}
+        hist = [load(x) for x in ordered[max(0, i - config.FLOW_BASELINE_DAYS):i]]
+        day = {"theme": {n: members(snap, prev, prev5, t, history=hist)
+                         for n, t in groups.get("theme", {}).items()}}
         sec_day = flows.get("sector", {}).get(d, {})
         top = sorted(sec_day, key=lambda n: -sec_day[n]["share"])[:sector_top]
         hot = sorted((n for n in sec_day if sec_day[n].get("heat") and sec_day[n]["share"] >= 0.01),
                      key=lambda n: -sec_day[n]["heat"])[:5]
-        day["sector"] = {n: members(snap, prev, prev5, groups["sector"][n], limit=sector_limit)
+        day["sector"] = {n: members(snap, prev, prev5, groups["sector"][n], limit=sector_limit, history=hist)
                          for n in dict.fromkeys(top + hot) if n in groups.get("sector", {})}
         out[d] = day
     return out

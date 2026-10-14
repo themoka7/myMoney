@@ -288,3 +288,25 @@ def test_release_notes_stays_under_github_limit(monkeypatch):
             "performance": {}, "flows": {}}
     monkeypatch.setattr(report, "BODY_LIMIT", 500)
     assert len(report.release_notes(site, "d")) <= 500
+
+
+def test_explain_reads_a_one_day_crash_like_a_human():
+    from mymoney import explain
+
+    apr = {"name": "에이피알", "ret": -0.196, "ret5": -0.2268, "value": 3672e8, "value_heat": 4.0,
+           "turnover": 0.035, "weight": 0.54, "foreign_5d": 341e8, "foreign_vs_value": 0.04, "foreign_vs_cap": 0.0032}
+    text = " ".join(t for t, _ in explain.notes(apr, "화장품"))
+    assert "대부분(-19.6%)이 오늘 하루에 몰렸다" in text
+    assert "평소(20일 평균)의 4.0배" in text and "투매" in text
+    assert "화장품 거래의 54%" in text
+    assert "흐름을 바꿀 힘은 아니었다" in text
+
+
+def test_explain_ignores_thin_trading_and_handles_reversal():
+    from mymoney import explain
+
+    thin = {"ret": -0.2, "ret5": -0.2, "value": 6e8, "value_heat": 9.0, "weight": 0.9}
+    assert explain.notes(thin, "x") == []
+    flip = {"ret": -0.10, "ret5": -0.016, "value": 745e8}
+    text = " ".join(t for t, _ in explain.notes(flip, "건설"))
+    assert "5일 누적(-1.6%)보다 크다" in text and "대부분" not in text

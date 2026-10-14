@@ -19,9 +19,22 @@ ROOT = Path(__file__).resolve().parent.parent
 SNAP_DIR = ROOT / "data" / "snapshots"
 TOP_DIR = ROOT / "data" / "top10"
 SITE_FILE = ROOT / "docs" / "data" / "history.json"
+MEMBER_DAYS = 20       # 테마·섹터 구성 종목 상세를 계산할 기간 (Release용)
+SITE_MEMBER_DAYS = 10  # 그중 대시보드 파일에 담는 기간 (용량)
 
 
 # ---------- 저장 ----------
+
+def _compact(obj):
+    """대시보드용: 큰 금액은 정수로, 비율은 유효숫자 5자리로 줄여 용량을 아낀다."""
+    if isinstance(obj, float):
+        return round(obj) if abs(obj) >= 1000 else float(f"{obj:.5g}")
+    if isinstance(obj, dict):
+        return {k: _compact(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_compact(v) for v in obj]
+    return obj
+
 
 def clean_json(obj):
     """NaN/Inf는 JSON 표준이 아니라 브라우저가 못 읽는다 → None으로."""
@@ -223,7 +236,7 @@ def followup(tops: dict[str, dict], date: str, load=load_snapshot,
 
 def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
                site_file: Path = SITE_FILE, meta_dir: Path | None = None) -> dict:
-    from . import flow
+    from . import explain, flow
 
     meta_dir = meta_dir or flow.META_DIR
     tops = load_tops(top_dir)
@@ -250,10 +263,21 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
     groups = {"market": flow.market_groups(load(max(tops)) if tops else None), **flow.load_groups(meta_dir)}
     data["flows"] = {kind: flow.compute(list(tops), load, members) for kind, members in groups.items()}
     data["theme_etfs"] = flow.theme_labels(meta_dir)
-    data["members"] = flow.members_by_date(list(tops), load, groups, data["flows"])
+    data["members"] = flow.members_by_date(list(tops), load, groups, data["flows"], keep_days=MEMBER_DAYS)
+    for day in data["members"].values():  # 대시보드에서도 같은 해석 문장을 보여 준다
+        for kind in day.values():
+            for group, rows in kind.items():
+                for r in rows:
+                    ns = explain.notes(r, group)
+                    if ns:
+                        r["notes"] = [t for t, _ in ns]
     if tops:
         data["followup"] = followup(tops, max(tops), load=load)
     site_file.parent.mkdir(parents=True, exist_ok=True)
-    site_file.write_text(json.dumps(clean_json(data), ensure_ascii=False, separators=(",", ":"), allow_nan=False),
+    # 대시보드 파일에는 테마 구성 종목만, 최근 SITE_MEMBER_DAYS일치만 (Release는 메모리의 전체 데이터를 쓴다)
+    recent = sorted(data["members"])[-SITE_MEMBER_DAYS:]
+    site = {**data, "members": {d: {"theme": data["members"][d].get("theme", {})} for d in recent}}
+    site_file.write_text(json.dumps(_compact(clean_json(site)), ensure_ascii=False, separators=(",", ":"),
+                                    allow_nan=False),
                          encoding="utf-8")
     return data

@@ -42,6 +42,10 @@ td.l, th.l { text-align: left; }
 .code { color: var(--muted); font-size: 12px; margin-left: 4px; }
 .guide { background: var(--chip); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin: 0 0 12px; }
 tr.clickable { cursor: pointer; }
+.notes { font-size: 13px; padding: 8px 6px 0; white-space: normal; text-align: left; }
+.notes ul { margin: 6px 0; padding-left: 18px; }
+.notes li { margin-bottom: 6px; line-height: 1.55; }
+.muted { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
 tr.clickable:hover td { background: var(--chip); }
 .caret { color: var(--muted); display: inline-block; width: 1em; }
 tr.members > td { padding: 4px 0 12px 12px; background: var(--chip); }
@@ -171,6 +175,13 @@ function render() {
   document.querySelectorAll("tr[data-theme]").forEach((tr) => { tr.onclick = () => toggleMembers(tr); });
 }
 
+function notesHtml(rows) {
+  const items = rows.filter((r) => r.notes && r.notes.length).slice(0, 3);
+  if (!items.length) return "";
+  return `<div class="notes"><b>🔎 눈여겨볼 점</b><ul>${items.map((r) => `<li><b>${r.name}</b> — ${r.notes.join(" ")}</li>`).join("")}</ul>
+    <p class="muted">표가 말해주는 건 여기까지(사실). '그래서 싸다/더 빠진다'는 실적·뉴스 같은 다른 근거로 판단해야 한다.</p></div>`;
+}
+
 function toggleMembers(tr) {
   const next = tr.nextElementSibling;
   if (next && next.classList.contains("members")) {
@@ -180,13 +191,16 @@ function toggleMembers(tr) {
   const pc = (v) => sgn(v, (x) => (x * 100).toFixed(2) + "%");
   const body = rows.length ? rows.map((r) => `<tr><td class="l"><a href="https://finance.naver.com/item/main.naver?code=${r.ticker}" target="_blank" rel="noopener">${r.name}</a></td>
       <td>${Math.round(r.close).toLocaleString()}</td><td>${pc(r.ret)}</td><td>${pc(r.ret5)}</td>
-      <td>${fmtWon(r.value)}</td><td>${r.weight == null ? "–" : Math.round(r.weight * 100) + "%"}</td><td>${sgn(r.foreign_5d, fmtWon)}</td></tr>`).join("")
-    : `<tr><td class="l" colspan="7">이 날짜의 구성 종목 데이터가 없습니다</td></tr>`;
+      <td>${fmtWon(r.value)}</td><td>${r.value_heat == null ? "–" : r.value_heat.toFixed(1) + "배"}</td>
+      <td>${r.turnover == null ? "–" : (r.turnover * 100).toFixed(r.turnover >= 0.01 ? 1 : 2) + "%"}</td>
+      <td>${r.weight == null ? "–" : Math.round(r.weight * 100) + "%"}</td><td>${sgn(r.foreign_5d, fmtWon)}</td>
+      <td>${r.foreign_vs_value == null ? "–" : sgn(r.foreign_vs_value, (x) => Math.round(x * 100) + "%")}</td></tr>`).join("")
+    : `<tr><td class="l" colspan="10">구성 종목 상세는 최근 10거래일만 제공합니다 (지난 날짜는 Releases 참고)</td></tr>`;
   const row = document.createElement("tr");
   row.className = "members";
   row.innerHTML = `<td colspan="5"><div class="tablewrap"><table class="sub">
-    <thead><tr><th class="l">종목</th><th>종가</th><th>오늘</th><th>5일</th><th>거래대금</th><th>테마 내 비중</th><th>외국인 5일</th></tr></thead>
-    <tbody>${body}</tbody></table></div></td>`;
+    <thead><tr><th class="l">종목</th><th>종가</th><th>오늘</th><th>5일</th><th>거래대금</th><th title="오늘 거래대금 ÷ 최근 20일 평균">평소 대비</th><th title="거래대금 ÷ 시가총액">회전율</th><th>테마 내 비중</th><th>외국인 5일</th><th title="외국인 5일 순매수 ÷ 5일 거래대금">외국인/거래</th></tr></thead>
+    <tbody>${body}</tbody></table></div>${notesHtml(rows)}</td>`;
   tr.after(row);
   tr.querySelector(".caret").textContent = "▾";
 }

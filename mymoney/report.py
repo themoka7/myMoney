@@ -1,9 +1,15 @@
 """하루치 결과를 GitHub Release 본문용 마크다운으로 만든다."""
 from __future__ import annotations
 
-from . import config, flow
+from . import config, explain, flow
 
 NAVER = "https://finance.naver.com/item/main.naver?code={}"
+_REFS: set[str] = set()  # 본문에 쓴 종목코드 → 끝에 링크 정의를 한 번씩만 붙인다 (본문 길이 절약)
+
+
+def _link(name: str, ticker: str) -> str:
+    _REFS.add(ticker)
+    return f"[{name}][{ticker}]"
 
 
 def _fmt_date(d: str) -> str:
@@ -39,9 +45,9 @@ def _md(d: str) -> str:
     return f"{int(d[4:6])}/{int(d[6:])}"
 
 
-def _price_details(items: list[dict], prices: dict, date: str) -> list[str]:
+def _price_details(items: list[dict], prices: dict, date: str, days: int = 20) -> list[str]:
     hist = {it["ticker"]: dict((d, c) for d, c in prices.get(it["ticker"], [])) for it in items}
-    rows = sorted({d for h in hist.values() for d in h}, reverse=True)
+    rows = sorted({d for h in hist.values() for d in h}, reverse=True)[:days]
     if not rows:
         return []
     lines = [f"<details><summary>📅 최근 {len(rows)}거래일 종가 (전날·그 전날…)</summary>", "",
@@ -71,7 +77,7 @@ def _followup_details(rows: list[dict]) -> list[str]:
         if len(r["path"]) > 8:
             flow = "… → " + flow
         lines.append(
-            f"| [{r['name']}]({NAVER.format(r['ticker'])}) | {_md(r['first_date'])} | {r['first_close']:,.0f} | "
+            f"| {_link(r['name'], r['ticker'])} | {_md(r['first_date'])} | {r['first_close']:,.0f} | "
             f"{flow} | {_pct(r['ret'])} | {'TOP10' if r['still_in'] else '이탈'} |"
         )
     if len(rows) > len(shown):
@@ -103,6 +109,31 @@ FLOW_INTRO = """> 💡 **쉽게 말하면** 오늘 시장에서 오간 돈(거�
 > ⚠️ 거래대금은 '사고판 양'이지 '들어온 돈'이 아니다. 급락할 때도 거래대금은 터진다. 그래서 등락률과 같이 봐야 한다."""
 
 
+def _x(v: float | None) -> str:
+    return "–" if v is None else f"{v:.1f}배"
+
+
+def _ratio(v: float | None, digits: int = 1) -> str:
+    return "–" if v is None else f"{v * 100:+.{digits}f}%"
+
+
+def _turn(v: float | None) -> str:
+    return "–" if v is None else (f"{v:.1%}" if v >= 0.01 else f"{v:.2%}")
+
+
+def _member_table(rows: list[dict]) -> list[str]:
+    lines = ["| 종목 | 종가 | 오늘 | 5일 | 거래대금 | 평소 대비 | 회전율 | 분야 내 비중 | 외국인 5일 | 외국인/거래 |",
+             "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|"]
+    for r in rows:
+        lines.append(
+            f"| {_link(r['name'], r['ticker'])} | {r['close']:,.0f} | {_pct(r['ret'])} | "
+            f"{_pct(r['ret5'])} | {_won(r['value'])} | {_x(r.get('value_heat'))} | "
+            f"{_turn(r.get('turnover'))} | "
+            f"{_share(r['weight'])} | {_won(r['foreign_5d'], signed=True)} | {_ratio(r.get('foreign_vs_value'), 0)} |"
+        )
+    return lines
+
+
 def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = None,
                sub=lambda n: "", member_note: str = "") -> list[str]:
     """분야마다 한 줄 요약을 펼치기 제목으로 쓰고, 누르면 바로 아래에 구성 종목이 열린다."""
@@ -123,14 +154,12 @@ def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = 
         head = " · ".join(x for x in [sub(n), f"거래대금 {_won(m['value'])}", f"{m['n']}종목 거래"] if x)
         lines += [f"<details><summary>{summary}</summary>", "", f"<sub>{head}{member_note if rows else ''}</sub>", ""]
         if rows:
-            lines += ["| 종목 | 종가 | 오늘 | 5일 | 거래대금 | 분야 내 거래 비중 | 외국인 5일 |",
-                      "|---|--:|--:|--:|--:|--:|--:|"]
-            for r in rows:
-                lines.append(
-                    f"| [{r['name']}]({NAVER.format(r['ticker'])}) | {r['close']:,.0f} | {_pct(r['ret'])} | "
-                    f"{_pct(r['ret5'])} | {_won(r['value'])} | {_share(r['weight'])} | "
-                    f"{_won(r['foreign_5d'], signed=True)} |"
-                )
+            lines += _member_table(rows)
+            picks = explain.notable(rows, n, limit=3)
+            if picks:
+                lines += ["", "🔎 **눈여겨볼 점**", ""]
+                for r, ts in picks:
+                    lines.append(f"- **{r['name']}** — " + " ".join(ts))
         else:
             lines.append("_종목 목록 없음 (리포트 길이 제한 또는 데이터 없음)_")
         lines += ["", "</details>", ""]
@@ -189,6 +218,43 @@ def _share(v: float | None) -> str:
     return "–" if v is None else f"{v:.0%}"
 
 
+COLUMN_GUIDE = """<details><summary>📖 종목 표 칸 읽는 법</summary>
+
+| 칸 | 뜻 | 이렇게 읽는다 |
+|---|---|---|
+| 오늘 / 5일 | 전 거래일 / 5거래일 전 종가 대비 | 5일 변동 대부분이 오늘이면 이벤트성 재평가 |
+| 거래대금 | 오늘 사고판 금액 | 많을수록 관심·논란이 크다 |
+| 평소 대비 | 오늘 거래대금 ÷ 최근 20일 평균 | 3배 이상이면 무슨 일이 있었다는 뜻 |
+| 회전율 | 거래대금 ÷ 시가총액 | 회사 몸값 중 몇 %가 하루에 주인이 바뀌었나 |
+| 분야 내 비중 | 테마·섹터 거래대금 중 이 종목 몫 | 40% 넘으면 분야 전체보다 이 종목 개별 이슈 |
+| 외국인 5일 | 외국인 5일 순매수(산 돈 − 판 돈) | 방향만 보지 말고 크기를 같이 본다 |
+| 외국인/거래 | 외국인 5일 순매수 ÷ 5일 거래대금 | ±10% 미만이면 방향과 무관하게 영향력 작음, ±20% 이상이면 외국인 주도 |
+
+</details>"""
+
+
+def _spotlight(members: dict, limit: int = 5) -> list[str]:
+    """테마 전체에서 해석할 거리가 가장 큰 종목들."""
+    seen, pool = set(), []
+    for group, rows in members.items():
+        for r in rows:
+            if r["ticker"] in seen or (r.get("value") or 0) < explain.SPOTLIGHT_MIN_VALUE:
+                continue
+            ns = explain.notes(r, group)
+            if ns:
+                seen.add(r["ticker"])
+                pool.append((sum(x for _, x in ns), group, r, [t for t, _ in ns]))
+    pool.sort(key=lambda x: -x[0])
+    if not pool:
+        return []
+    out = ["### 🔎 오늘 눈에 띈 종목 — 숫자가 말해주는 것", ""]
+    for _, group, r, ts in pool[:limit]:
+        out.append(f"- **{_link(r['name'], r['ticker'])}** <sub>{group} · {_pct(r['ret'])} · "
+                   f"거래 {_won(r['value'])}</sub><br>" + " ".join(ts))
+    out += ["", f"> ⚠️ {explain.DISCLAIMER}", "", COLUMN_GUIDE, ""]
+    return out
+
+
 def _flow_section(site: dict, date: str, level: int = 0) -> list[str]:
     flows = site.get("flows", {})
     themes, sectors = flows.get("theme", {}), flows.get("sector", {})
@@ -201,12 +267,13 @@ def _flow_section(site: dict, date: str, level: int = 0) -> list[str]:
         mem = site.get("members", {}).get(date, {}).get("theme", {})
         out += ["### 테마", "<sub>테마 = 대표 ETF가 담고 있는 종목 묶음. 종목이 여러 테마에 겹칠 수 있다.</sub>", ""]
         out += _flow_list(themes, names, date, mem, sub=lambda n: etfs.get(n, ""))
+        out += _spotlight(mem)
     if date in sectors and sectors[date]:
         day = sectors[date]
         top = sorted(day, key=lambda n: -day[n]["share"])[:10]
         hot = sorted((n for n in day if day[n].get("heat") and day[n]["share"] >= 0.01),
                      key=lambda n: -day[n]["heat"])[:5]
-        smem = site.get("members", {}).get(date, {}).get("sector", {}) if level < 1 else {}
+        smem = site.get("members", {}).get(date, {}).get("sector", {}) if level < 2 else {}
         note = " · 거래대금 상위 종목만"
         out += ["### 섹터 (KRX 업종) — 거래대금 비중 상위 10", ""] + _flow_list(sectors, top, date, smem, member_note=note)
         if hot:
@@ -304,7 +371,7 @@ GLOSSARY = """<details>
 
 def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
     """Release 본문. GitHub 한도를 넘으면 덜 중요한 펼치기부터 뺀다."""
-    for level in range(4):
+    for level in range(5):
         text = _render(site, date, follow, level)
         if len(text) <= BODY_LIMIT:
             return text
@@ -312,7 +379,14 @@ def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
 
 
 def _render(site: dict, date: str, follow: dict | None, level: int) -> str:
-    """level 0: 전부 · 1: 섹터 구성 종목 생략 · 2: +선정 후 추적 생략 · 3: +과거 종가 표 생략."""
+    _REFS.clear()
+    body = _render_body(site, date, follow, level)
+    refs = "\n".join(f"[{t}]: {NAVER.format(t)}" for t in sorted(_REFS))
+    return body + "\n\n" + refs + "\n"
+
+
+def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
+    """level 0: 전부 · 1: 과거 종가 표 10일로 · 2: +섹터 구성 종목 생략 · 3: +선정 후 추적 생략 · 4: +과거 종가 표 생략."""
     day = site["days"][date]
     prices = site.get("prices", {}).get(date, {})
     follow = follow or {}
@@ -352,12 +426,12 @@ def _render(site: dict, date: str, follow: dict | None, level: int) -> str:
                 "|--:|:-:|---|---|--:|--:|:-:|--:|--:|--:|"]
         for it in items:
             out.append(
-                f"| {it['rank']} | {_move(it)} | [{it['name']}]({NAVER.format(it['ticker'])}) `{it['ticker']}` | "
+                f"| {it['rank']} | {_move(it)} | {_link(it['name'], it['ticker'])} `{it['ticker']}` | "
                 f"{it['market']} | {it['score']:.1f} | {it['close']:,.0f} | "
                 f"{_spark(series(it))} | {_chg(it, 5)} | {_chg(it, 20)} | {it['streak']}일 |"
             )
-        out += [""] + (_price_details(items, prices, date) if level < 3 else []) \
-            + (_followup_details(follow.get(cat, [])) if level < 2 else [])
+        out += [""] + (_price_details(items, prices, date, days=20 if level < 1 else 10) if level < 4 else []) \
+            + (_followup_details(follow.get(cat, [])) if level < 3 else [])
         dropped = day["dropped"].get(cat, [])
         if dropped:
             out += ["", "이탈: " + ", ".join(f"{x['name']}({x['prev_rank']}위)" for x in dropped)]
