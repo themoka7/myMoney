@@ -2,7 +2,12 @@ name: daily-top10
 
 on:
   schedule:
-    - cron: "40 7 * * 1-5"   # 평일 16:40 KST (장 마감 후 KRX 데이터 확정 이후)
+    # GitHub 예약 실행은 부하가 크면 늦어지거나 아예 빠질 수 있다 → 같은 날 여러 번 걸어 둔다.
+    # 이미 수집된 날은 건너뛰고 Release만 갱신하므로 여러 번 돌아도 안전하다.
+    - cron: "40 7 * * 1-5"    # 16:40 KST
+    - cron: "17 9 * * 1-5"    # 18:17 KST (백업)
+    - cron: "47 11 * * 1-5"   # 20:47 KST (백업)
+    - cron: "23 23 * * 0-4"   # 다음날 08:23 KST (최후 백업 — 전날 빠진 걸 채움)
   workflow_dispatch:
     inputs:
       date:
