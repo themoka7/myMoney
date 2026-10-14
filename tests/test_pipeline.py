@@ -166,8 +166,10 @@ def test_release_notes_shows_recent_prices_and_followup(tmp_path):
     site = track.build_site(top_dir=top_dir, snap_dir=snap_dir, site_file=tmp_path / "h.json")
     load = lambda d: track.load_snapshot(d, snap_dir)
     md = release_notes(site, "20261013", track.followup(track.load_tops(top_dir), "20261013", load=load))
-    assert "최근 거래일 종가" in md and "| 10/8 | 10/9 | **10/13** |" in md
-    assert "선정 후 추적" in md and "5일 흐름" in md
+    assert "거래일 종가" in md and "| **10/13** |" in md
+    # 10/12는 스냅샷에서, 10/8·10/9는 저장된 prices에서 온다
+    assert "\n| 10/12 |" in md and "\n| 10/9 |" in md and "\n| 10/8 |" in md
+    assert "선정 후 추적" in md and "20일 흐름" in md and "20일 등락" in md
 
 
 def test_retrying_wrapper_retries_empty_then_succeeds(monkeypatch):
@@ -193,3 +195,12 @@ def test_retrying_wrapper_retries_empty_then_succeeds(monkeypatch):
 
     with pytest.raises(RuntimeError):
         collect._Retrying(Dead()).get()
+
+
+def test_price_history_merges_snapshots_and_stored_prices():
+    snaps = {d: pd.DataFrame({"close": [float(i)]}, index=pd.Index(["A"], name="ticker"))
+             for i, d in enumerate(["d01", "d02", "d03", "d04"], start=1)}
+    tops = {d: _day(["A"]) for d in snaps}
+    tops["d04"]["prices"] = {"A": [["d00", 0.5], ["d01", 999.0]]}
+    h = track.price_history(tops, "d04", load=snaps.get, days=3)
+    assert h["A"] == [["d01", 1.0], ["d02", 2.0], ["d03", 3.0]]  # 스냅샷 우선, 최근 3일만

@@ -40,17 +40,17 @@ def _md(d: str) -> str:
 
 
 def _price_details(items: list[dict], prices: dict, date: str) -> list[str]:
-    hist = {it["ticker"]: prices.get(it["ticker"], []) for it in items}
-    cols = sorted({d for h in hist.values() for d, _ in h})
-    if not cols:
+    hist = {it["ticker"]: dict((d, c) for d, c in prices.get(it["ticker"], [])) for it in items}
+    rows = sorted({d for h in hist.values() for d in h}, reverse=True)
+    if not rows:
         return []
-    lines = ["<details><summary>📅 최근 거래일 종가 (전날·그 전날…)</summary>", "",
-             "| 종목 | " + " | ".join(_md(d) for d in cols) + f" | **{_md(date)}** |",
-             "|---|" + "--:|" * (len(cols) + 1)]
-    for it in items:
-        h = dict((d, c) for d, c in hist[it["ticker"]])
-        cells = [f"{h[d]:,.0f}" if d in h else "–" for d in cols]
-        lines.append(f"| {it['name']} | " + " | ".join(cells) + f" | **{it['close']:,.0f}** |")
+    lines = [f"<details><summary>📅 최근 {len(rows)}거래일 종가 (전날·그 전날…)</summary>", "",
+             "| 날짜 | " + " | ".join(it["name"] for it in items) + " |",
+             "|---|" + "--:|" * len(items),
+             f"| **{_md(date)}** | " + " | ".join(f"**{it['close']:,.0f}**" for it in items) + " |"]
+    for d in rows:
+        lines.append(f"| {_md(d)} | " + " | ".join(
+            f"{hist[it['ticker']][d]:,.0f}" if d in hist[it["ticker"]] else "–" for it in items) + " |")
     return lines + ["", "</details>", ""]
 
 
@@ -127,13 +127,13 @@ GLOSSARY = """<details>
 |---|---|
 | 점수 | 0~100. 그날 비교 대상 종목들 사이에서의 **상대 등수**를 백분율로 바꾼 것. 90점 = 상위 10% 안. 절대 평가가 아니라서 시장 전체가 나빠도 누군가는 100점이다 |
 | 전일대비 | 🆕 어제는 없었는데 오늘 TOP10 진입(예전에 들었다가 다시 들어온 재진입 포함) · 🔺 어제보다 순위 상승 · 🔻 순위 하락 · – 그대로 |
-| 5일 흐름 | 최근 5거래일 + 오늘 종가를 막대 높이로 그린 것 (▁ 낮음 → █ 높음). 표 아래 "최근 거래일 종가"를 펼치면 날짜별 실제 가격이 나온다 |
-| 5일 등락 | 5거래일 전 종가 대비 오늘 종가 변화율 |
+| 20일 흐름 | 최근 20거래일(약 한 달) + 오늘 종가를 막대 높이로 그린 것 (▁ 낮음 → █ 높음). 표 아래 "최근 거래일 종가"를 펼치면 날짜별 실제 가격이 나온다 |
+| 5일 / 20일 등락 | 5거래일(약 1주) / 20거래일(약 1달) 전 종가 대비 오늘 종가 변화율 |
 | 연속 | 며칠째 연속으로 TOP10에 들어 있는지. 길수록 그 특성이 꾸준하다는 뜻 |
 | 이탈 | 어제는 TOP10이었는데 오늘 빠진 종목 |
 | 시장 | KOSPI(유가증권시장, 대형주 위주) / KOSDAQ(코스닥, 중소형·기술주 위주) |
 
-**선정 후 추적**: 최근 20일 기록 중 TOP10에 한 번이라도 든 종목을, 처음 든 날 종가에 샀다고 치고 그 뒤 매일 종가를 이어 붙인 것.
+**선정 후 추적**: 최근 60일 기록 중 TOP10에 한 번이라도 든 종목을, 처음 든 날 종가에 샀다고 치고 그 뒤 매일 종가를 이어 붙인 것.
 "지금"이 이탈이어도 계속 따라간다. 뽑힌 뒤 실제로 올랐는지 확인하는 용도.
 
 **비교 대상(유니버스)**: 너무 작거나 거래가 적은 종목은 원하는 가격에 사고팔기 어려워서 뺐다.
@@ -168,9 +168,11 @@ def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
     def series(it):
         return [c for _, c in prices.get(it["ticker"], [])] + [it["close"]]
 
-    def _chg(it):
+    def _chg(it, n):
         s = series(it)
-        return _pct(s[-1] / s[0] - 1) if len(s) > 1 and s[0] else "–"
+        if len(s) <= n or not s[-1 - n]:
+            return "–"
+        return _pct(s[-1] / s[-1 - n] - 1)
 
     dates = site["dates"]
     i = dates.index(date)
@@ -190,13 +192,13 @@ def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
         if not items:
             out += ["_데이터 없음_", ""]
             continue
-        out += ["| 순위 | 전일대비 | 종목 | 시장 | 점수 | 종가 | 5일 흐름 | 5일 등락 | 연속 |",
-                "|--:|:-:|---|---|--:|--:|:-:|--:|--:|"]
+        out += ["| 순위 | 전일대비 | 종목 | 시장 | 점수 | 종가 | 20일 흐름 | 5일 등락 | 20일 등락 | 연속 |",
+                "|--:|:-:|---|---|--:|--:|:-:|--:|--:|--:|"]
         for it in items:
             out.append(
                 f"| {it['rank']} | {_move(it)} | [{it['name']}]({NAVER.format(it['ticker'])}) `{it['ticker']}` | "
                 f"{it['market']} | {it['score']:.1f} | {it['close']:,.0f} | "
-                f"{_spark(series(it))} | {_chg(it)} | {it['streak']}일 |"
+                f"{_spark(series(it))} | {_chg(it, 5)} | {_chg(it, 20)} | {it['streak']}일 |"
             )
         out += [""] + _price_details(items, prices, date) + _followup_details(follow.get(cat, []))
         dropped = day["dropped"].get(cat, [])

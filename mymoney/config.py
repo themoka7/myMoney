@@ -59,6 +59,10 @@ COMPOSITE_WEIGHTS = {
     "foreign": 0.2,
 }
 
+# 종목별 과거 종가를 보여줄 거래일 수, 선정 후 추적 기간(기록일 수)
+PRICE_HISTORY_DAYS = 20
+FOLLOWUP_WINDOW = 60
+
 # 모멘텀/수급 계산 기간 (달력 기준 일수, 영업일 수가 아님)
 MOMENTUM_SHORT_DAYS = 30
 MOMENTUM_LONG_DAYS = 90

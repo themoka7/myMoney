@@ -126,7 +126,7 @@ def collect(date: str) -> pd.DataFrame:
     return df
 
 
-def recent_closes(date: str, tickers: list[str], days: int = 5,
+def recent_closes(date: str, tickers: list[str], days: int = config.PRICE_HISTORY_DAYS,
                   cached=lambda d: None) -> dict[str, list[list]]:
     """tickers의 date 이전 days거래일 종가. {ticker: [[YYYYMMDD, close], ...]} (오래된 순, date 제외).
 
@@ -134,7 +134,7 @@ def recent_closes(date: str, tickers: list[str], days: int = 5,
     """
     stock = _stock()
     biz = [pd.Timestamp(x).strftime("%Y%m%d")
-           for x in stock.get_previous_business_days(fromdate=_shift(date, days * 3 + 10), todate=date)]
+           for x in stock.get_previous_business_days(fromdate=_shift(date, days * 2 + 15), todate=date)]
     prev = [d for d in biz if d < date][-days:]
     out: dict[str, list[list]] = {t: [] for t in tickers}
     for d in prev:

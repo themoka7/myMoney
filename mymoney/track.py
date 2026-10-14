@@ -136,10 +136,33 @@ def performance(tops: dict[str, dict], load=load_snapshot) -> dict[str, list[dic
     return result
 
 
+# ---------- 과거 종가 ----------
+
+def price_history(tops: dict[str, dict], date: str, load=load_snapshot,
+                  days: int = config.PRICE_HISTORY_DAYS) -> dict[str, list[list]]:
+    """date의 TOP N 종목들의 직전 days거래일 종가 {ticker: [[YYYYMMDD, close], ...]} (오래된 순).
+
+    저장해 둔 스냅샷을 우선 쓰고, 스냅샷이 없는 날은 수집 때 함께 저장한 prices로 채운다.
+    """
+    tickers = {it["ticker"] for items in tops[date]["categories"].values() for it in items}
+    merged: dict[str, dict[str, float]] = {t: {} for t in tickers}
+    for t, hist in tops[date].get("prices", {}).items():
+        if t in merged:
+            merged[t].update({d: c for d, c in hist})
+    for d in [x for x in sorted(tops) if x < date][-days:]:
+        snap = load(d)
+        if snap is None:
+            continue
+        for t in tickers:
+            if t in snap.index and pd.notna(snap.loc[t, "close"]):
+                merged[t][d] = float(snap.loc[t, "close"])
+    return {t: [[d, h[d]] for d in sorted(h)[-days:]] for t, h in merged.items()}
+
+
 # ---------- 선정 후 추적 ----------
 
 def followup(tops: dict[str, dict], date: str, load=load_snapshot,
-             window: int = 20) -> dict[str, list[dict]]:
+             window: int = config.FOLLOWUP_WINDOW) -> dict[str, list[dict]]:
     """최근 window 기록일 동안 TOP N에 들었던 종목을, 처음 선정된 날부터 date까지 매일 종가로 추적한다.
 
     {cat: [{ticker, name, first_date, first_close, path: [[date, close], ...], ret, still_in}]}
@@ -183,6 +206,13 @@ def followup(tops: dict[str, dict], date: str, load=load_snapshot,
 def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
                site_file: Path = SITE_FILE) -> dict:
     tops = load_tops(top_dir)
+    cache: dict[str, pd.DataFrame | None] = {}
+
+    def load(d):
+        if d not in cache:
+            cache[d] = load_snapshot(d, snap_dir)
+        return cache[d]
+
     data = {
         "categories": {
             k: {"label": v[0], "desc": v[1], "easy": config.CATEGORY_GUIDE[k][0],
@@ -193,11 +223,11 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
         "round_trip_cost": config.ROUND_TRIP_COST,
         "dates": sorted(tops),
         "days": annotate_changes(tops),
-        "performance": performance(tops, load=lambda d: load_snapshot(d, snap_dir)),
-        "prices": {d: tops[d].get("prices", {}) for d in tops},
+        "performance": performance(tops, load=load),
     }
+    data["prices"] = {d: price_history(tops, d, load=load) for d in tops}
     if tops:
-        data["followup"] = followup(tops, max(tops), load=lambda d: load_snapshot(d, snap_dir))
+        data["followup"] = followup(tops, max(tops), load=load)
     site_file.parent.mkdir(parents=True, exist_ok=True)
     site_file.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return data
