@@ -207,7 +207,7 @@ function toggleMembers(tr) {
   const body = rows.length ? rows.map((r) => `<tr><td class="l"><a href="https://finance.naver.com/item/main.naver?code=${r.ticker}" target="_blank" rel="noopener">${r.name}</a></td>
       <td>${Math.round(r.close).toLocaleString()}</td><td>${pc(r.ret)}</td><td>${pc(r.ret5)}</td>
       <td>${fmtWon(r.value)}</td><td>${r.value_heat == null ? "–" : r.value_heat.toFixed(1) + "배"}</td>
-      <td>${r.turnover == null ? "–" : (r.turnover * 100).toFixed(r.turnover >= 0.01 ? 1 : 2) + "%"}</td>
+      <td>${r.turnover == null ? "–" : (r.turnover * 100).toFixed(r.turnover >= 0.01 ? 1 : 2) + "%" + (r.turnover > 1 ? " ⚠️검증 필요" : "")}</td>
       <td>${r.weight == null ? "–" : Math.round(r.weight * 100) + "%"}</td>
       <td>${foreignCell(r.foreign_5d, r.foreign_vs_value, r.ret5)}</td></tr>`).join("")
     : `<tr><td class="l" colspan="10">구성 종목 상세는 최근 10거래일만 제공합니다 (지난 날짜는 Releases 참고)</td></tr>`;
@@ -231,7 +231,8 @@ function forestHtml() {
     return `<tr><td class="l">${n}</td><td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td>
       <td>🔺${m.up} / 🔻${m.down}</td><td>${fmtWon(m.value)}</td><td>${foreignCell(m.foreign_5d, m.foreign_vs_value, null)}</td></tr>`;
   }).join("");
-  const trows = th ? Object.entries(th).sort((a, b) => b[1].share - a[1].share).map(([n, m]) => {
+  const hidden = DATA.theme_overlap || {};
+  const trows = th ? Object.entries(th).filter(([n]) => !hidden[n]).sort((a, b) => b[1].share - a[1].share).map(([n, m]) => {
     const heat = m.heat == null ? "–" : m.heat.toFixed(1) + "배" + (m.heat >= 1.5 ? " 🔥" : m.heat <= 0.67 ? " 🧊" : "");
     return `<tr class="clickable" data-theme="${n}" title="눌러서 구성 종목 보기"><td class="l"><span class="caret">▸</span> ${n}</td><td>${(m.share * 100).toFixed(1)}%</td><td>${heat}</td>
       <td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td><td>${foreignCell(m.foreign_5d, m.foreign_vs_value, null)}</td></tr>`;

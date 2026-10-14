@@ -22,7 +22,7 @@ def _collect_day(date: str, force: bool) -> bool:
     if (track.TOP_DIR / f"{date}.json").exists() and not force:
         print(f"{date}: 이미 수집됨 (--force 로 덮어쓰기)")
         return False
-    snap = collect(date)
+    snap = collect(date, cached=track.load_snapshot)
     scores = score(snap)
     top = top_n(scores)
     tickers = sorted({it["ticker"] for items in top.values() for it in items})

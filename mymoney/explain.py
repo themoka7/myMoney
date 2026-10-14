@@ -15,75 +15,120 @@ def _won(v: float) -> str:
     return f"{sign}{v / 1e12:,.1f}조" if abs(v) >= 1e12 else f"{sign}{v / 1e8:,.0f}억"
 
 
-MIN_VALUE = 50e8          # 거래대금 50억 미만은 '평소 대비' 같은 배수가 의미 없이 튄다
+MIN_VALUE = 50e8             # 거래대금 50억 미만은 '평소 대비' 같은 배수가 의미 없이 튄다
 SPOTLIGHT_MIN_VALUE = 300e8  # 전체 하이라이트는 거래대금 300억 이상만
+MAX_TURNOVER = 1.0           # 회전율 100% 초과는 '데이터 점검' 대상 — 해설하지 않는다
+
+_CARD: dict = {}  # signals.scorecard() 결과. 문장 끝에 그 규칙의 과거 성적을 붙인다
+
+
+def set_scorecard(card: dict) -> None:
+    _CARD.clear()
+    _CARD.update(card or {})
+
+
+def evidence(rule: str) -> str:
+    c = _CARD.get(rule)
+    if not c:
+        return ""
+    if c["n"] < 20 or c["hit"] is None:
+        return f" <sub>[{rule} 검증: 표본 {c['n']}개, 아직 부족]</sub>"
+    return f" <sub>[{rule} 검증: 적중 {c['hit']:.0%}·표본 {c['n']} — {c['verdict']}]</sub>"
+
+
+def claim(rule: str, default: str, contrary: str) -> str:
+    """규칙 문구를 성적에 맞춰 바꾼다. 반대로 나오는 규칙을 그대로 말하지 않는다."""
+    c = _CARD.get(rule)
+    v = (c or {}).get("verdict", "")
+    if v.startswith("반대로 나옴"):
+        return f"{contrary} <sub>[{rule}: 통념과 반대 — 이 리포트 기록상 적중 {c['hit']:.0%}·표본 {c['n']}]</sub>"
+    if v.startswith("근거 약함"):
+        return f"{default} — 단, 이 리포트 기록상 근거 약함 <sub>[{rule}: 적중 {c['hit']:.0%}·표본 {c['n']}]</sub>"
+    return default + evidence(rule)
+
+
+def signal_score(r: dict) -> float:
+    """해설을 보여 줄 우선순위. 오늘 등락·평소 대비 거래·외국인 비중·이벤트성 여부."""
+    ret, ret5, heat, fv = r.get("ret"), r.get("ret5"), r.get("value_heat"), r.get("foreign_vs_value")
+    event = ret is not None and ret5 is not None and abs(ret) >= 0.05 and (
+        (ret * ret5 > 0 and abs(ret) >= 0.6 * abs(ret5)) or abs(ret) > abs(ret5))
+    return (abs(ret or 0) * 100 * 1.0 + max(0.0, (heat or 0) - 1) * 2.0
+            + abs(fv or 0) * 100 * 0.5 + (5 if event else 0))
 
 
 def notes(r: dict, group: str) -> list[tuple[str, float]]:
     out: list[tuple[str, float]] = []
-    if (r.get("value") or 0) < MIN_VALUE:
+    if (r.get("value") or 0) < MIN_VALUE or (r.get("turnover") or 0) > MAX_TURNOVER:
         return out
+    from .signals import fired
     ret, ret5 = r.get("ret"), r.get("ret5")
     heat, turn = r.get("value_heat"), r.get("turnover")
-    w, f5 = r.get("weight"), r.get("foreign_5d")
-    fv, fc = r.get("foreign_vs_value"), r.get("foreign_vs_cap")
-
-    # 1. 5일 움직임이 하루에 몰렸나
+    w, f5, fv = r.get("weight"), r.get("foreign_5d"), r.get("foreign_vs_value")
+    rules = fired(ret, ret5, heat, fv)
     kind = "급락" if (ret or 0) < 0 else "급등"
-    if ret is not None and ret5 is not None and abs(ret) >= 0.05 and ret * ret5 > 0 and 0.6 * abs(ret5) <= abs(ret) <= abs(ret5):
-        out.append((f"5일 {_p(ret5)} 중 대부분({_p(ret)})이 오늘 하루에 몰렸다. 서서히가 아니라 "
-                    f"어떤 이벤트로 한 번에 재평가된 모양새 — 이런 {kind} 다음날은 되돌림이 나오기 쉽다.", abs(ret) * 10))
-    elif ret is not None and ret5 is not None and abs(ret) >= 0.05 and abs(ret) > abs(ret5):
-        out.append((f"오늘 하루 {_p(ret)}가 5일 누적({_p(ret5)})보다 크다 — 며칠간 반대로 움직이던 걸 하루에 뒤집은 "
-                    f"이벤트성 {kind}. 이런 날 다음엔 되돌림이 나오기 쉽다.", abs(ret) * 10))
-    elif ret is not None and abs(ret) >= 0.08:
-        out.append((f"오늘 {_p(ret)}로 크게 움직였다.", abs(ret) * 5))
 
-    # 2. 손바뀜
+    # 1. 5일 움직임이 하루에 몰렸나 (EVENT_DROP / EVENT_JUMP)
+    ev = "EVENT_DROP" if "EVENT_DROP" in rules else ("EVENT_JUMP" if "EVENT_JUMP" in rules else None)
+    rebound = claim(ev, f"이런 {kind} 다음날은 되돌림이 나오기 쉽다",
+                    f"흔히 다음날 되돌림을 기대하지만, 최근 기록에선 오히려 같은 방향으로 이어진 경우가 더 많았다") if ev else ""
+    if ev and abs(ret) <= abs(ret5):
+        out.append((f"5일 {_p(ret5)} 중 대부분({_p(ret)})이 오늘 하루에 몰렸다 — 서서히가 아니라 이벤트로 "
+                    f"한 번에 재평가된 모양새. {rebound}.", 0))
+    elif ev:
+        out.append((f"오늘 하루 {_p(ret)}가 5일 누적({_p(ret5)})보다 크다 — 며칠간 반대로 가던 걸 하루에 뒤집은 "
+                    f"이벤트성 {kind}. {rebound}.", 0))
+    elif ret is not None and abs(ret) >= 0.08:
+        out.append((f"오늘 {_p(ret)}로 크게 움직였다.", 0))
+
+    # 2. 손바뀜 (CAPITULATION / CHASE_RISK)
     if heat is not None and heat >= 3:
-        s = f"거래대금이 평소(20일 평균)의 {heat:.1f}배"
-        if turn is not None:
-            s += f", 시가총액의 {turn:.1%}가 하루에 손바뀜"
-        if ret is not None and ret <= -0.05:
-            s += ". 팔고 싶은 물량이 쏟아졌고 누군가 받아갔다('투매'). 바닥 신호일 수도 있지만 이것만으로 단정할 수 없다."
-        elif ret is not None and ret >= 0.05:
-            s += ". 사려는 돈이 몰렸다. 뒤늦게 따라 사면 고점에 물릴 위험이 크다."
+        s = f"거래대금이 평소(20일 평균)의 {heat:.1f}배" + (f", 시가총액의 {turn:.1%}가 하루에 손바뀜" if turn else "")
+        if "CAPITULATION" in rules:
+            s += ". 팔려는 물량을 누군가 받아갔다('투매') — " + claim(
+                "CAPITULATION", "바닥 신호일 수도 있지만 이것만으로 단정할 수 없다",
+                "흔히 바닥 신호로 읽지만, 최근 기록에선 다음날 더 빠진 경우가 많았다") + "."
+        elif "CHASE_RISK" in rules:
+            s += ". 사려는 돈이 몰렸다 — " + claim(
+                "CHASE_RISK", "뒤늦게 따라 사면 고점에 물릴 위험이 크다",
+                "흔히 추격 매수는 위험하다고 하지만, 최근 기록에선 다음날 더 오른 경우가 많았다") + "."
         else:
-            s += ". 가격 변화에 비해 거래가 유난히 많다 — 손바뀜(매수·매도 주체 교체)이 일어나는 중."
-        out.append((s, min(heat, 10)))
+            s += ". 가격 변화에 비해 거래가 유난히 많다 — 손바뀜(주인 교체)이 일어나는 중."
+        out.append((s, 0))
     elif turn is not None and turn >= 0.05:
-        out.append((f"시가총액의 {turn:.1%}가 하루에 거래됐다 — 회전율이 매우 높다(단타 자금이 몰린 상태).", 3))
+        out.append((f"시가총액의 {turn:.1%}가 하루에 거래됐다 — 단타 자금이 몰린 상태.", 0))
 
     # 3. 분야 안에서의 쏠림
     if w is not None and w >= 0.4:
-        out.append((f"{group} 거래의 {w:.0%}가 이 종목 하나에서 나왔다 — 분야 전체 흐름이라기보다 "
-                    f"이 종목 개별 이슈일 가능성이 크다.", w * 5))
+        out.append((f"{group} 거래의 {w:.0%}가 이 종목 하나에서 나왔다 — 분야 전체보다 이 종목 개별 이슈일 가능성이 크다.", 0))
 
-    # 4. 외국인: 방향과 크기를 같이 본다
-    if f5 is not None and fv is not None:
-        if ret5 is not None and abs(ret5) >= 0.05 and f5 * ret5 < 0 and abs(fv) < 0.1:
-            way = "순매수" if f5 > 0 else "순매도"
-            s = f"주가가 5일 {_p(ret5)} 움직이는 동안 외국인은 반대로 {_won(f5)} {way}했지만, 같은 기간 거래대금의 {abs(fv):.0%}"
-            if fc is not None:
-                s += f"·시총의 {abs(fc):.2%}"
-            s += " 수준 — 방향은 반대여도 흐름을 바꿀 힘은 아니었다. 순매수 숫자 하나로 외국인 의도를 읽기는 어렵다."
-            out.append((s, 2))
-        elif abs(fv) >= 0.2:
-            way = "순매수" if f5 > 0 else "순매도"
-            out.append((f"외국인이 5일 거래대금의 {abs(fv):.0%}에 해당하는 {_won(f5)}를 {way} — "
-                        f"외국인이 주도한 흐름.", abs(fv) * 5))
-    return out
+    # 4. 외국인: 10% 미만은 말하지 않는다(표의 꼬리표로 충분), 10~20%는 방향만, 20% 이상은 '주도'
+    if f5 is not None and fv is not None and abs(fv) >= 0.10:
+        way = "순매수" if f5 > 0 else "순매도"
+        if "FOREIGN_LED" in rules:
+            out.append((f"외국인이 5일 거래의 {abs(fv):.0%}({_won(f5)})를 {way} — " + claim(
+                "FOREIGN_LED", "외국인 주도", "외국인 주도처럼 보이지만, 최근 기록에선 주가가 외국인 반대로 간 경우가 많았다") + ".", 0))
+        else:
+            out.append((f"외국인 5일 {way}(거래의 {abs(fv):.0%}) — 방향만 참고.", 0))
+    score = signal_score(r)
+    return [(t, score) for t, _ in out]
 
 
-def notable(rows: list[dict], group: str, limit: int = 3) -> list[tuple[dict, list[str]]]:  # noqa: E501
-    """해석할 거리가 있는 종목을 중요도 순으로 limit개."""
+def notable(rows: list[dict], group: str, limit: int = 2, seen: set | None = None) -> list[tuple[dict, list[str]]]:
+    """해석할 거리가 있는 종목을 신호 강도 순으로 limit개. seen에 있는 종목은 '↑ 위 참고'로 줄인다."""
     scored = []
     for r in rows:
         ns = notes(r, group)
         if ns:
-            scored.append((sum(x for _, x in ns), r, [t for t, _ in ns]))
+            scored.append((ns[0][1], r, [t for t, _ in ns]))
     scored.sort(key=lambda x: -x[0])
-    return [(r, ts) for _, r, ts in scored[:limit]]
+    out = []
+    for _, r, ts in scored[:limit]:
+        if seen is not None and r["ticker"] in seen:
+            ts = ["↑ 위 해설 참고."]
+        elif seen is not None:
+            seen.add(r["ticker"])
+        out.append((r, ts))
+    return out
 
 
 DISCLAIMER = "표가 말해주는 건 여기까지(사실). '그래서 싸다/더 빠진다'는 실적·뉴스 같은 다른 근거로 판단해야 한다."

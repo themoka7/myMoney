@@ -5,6 +5,7 @@ pykrx 1.2.x부터는 KRX 정보데이터시스템 로그인이 필요하다.
 """
 from __future__ import annotations
 
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,7 @@ import pandas as pd
 from . import config
 
 MARKETS = ("KOSPI", "KOSDAQ")
+TICKER_RE = re.compile(r"^[0-9A-Z]{6}$")  # 2024년부터 영문 혼합 신형 코드(예: 0035S0)가 있다 — 숫자 전용 가정 금지
 
 
 RETRY_WAITS = (10, 30, 90)  # KRX가 연속 호출을 막으면(비JSON 응답·빈 결과) 쉬었다가 재시도
@@ -87,7 +89,9 @@ def _shift(date: str, days: int) -> str:
 
 def _market_snapshot(stock, date: str, market: str) -> pd.DataFrame:
     cap = stock.get_market_cap(date, market=market)[["종가", "시가총액", "거래대금"]]
-    fund = stock.get_market_fundamental(date, market=market)[["PER", "PBR", "DIV"]]
+    fund = stock.get_market_fundamental(date, market=market)[["PER", "PBR", "DIV", "EPS", "BPS"]]
+    year_ago = stock.get_nearest_business_day_in_a_week(_shift(date, 365), prev=True)
+    fund_1y = stock.get_market_fundamental(year_ago, market=market)[["EPS"]]
     ohlcv = stock.get_market_ohlcv(date, market=market)[["시가"]]
 
     short = stock.get_market_price_change(_shift(date, config.MOMENTUM_SHORT_DAYS), date, market=market)
@@ -116,13 +120,16 @@ def _market_snapshot(stock, date: str, market: str) -> pd.DataFrame:
     df["per"] = fund["PER"]
     df["pbr"] = fund["PBR"]
     df["div"] = fund["DIV"]
+    df["eps"] = fund["EPS"]
+    df["bps"] = fund["BPS"]
+    df["eps_1y"] = fund_1y["EPS"].reindex(df.index)
     df["ret_1m"] = short["등락률"]
     df["ret_3m"] = long_["등락률"]
     df["foreign_net_5d"] = foreign["순매수거래대금"].reindex(df.index).fillna(0)
     return df
 
 
-def collect(date: str) -> pd.DataFrame:
+def collect(date: str, cached=lambda d: None) -> pd.DataFrame:
     stock = _stock()
     frames = [_market_snapshot(stock, date, m) for m in MARKETS]
     df = pd.concat(frames)
@@ -130,7 +137,24 @@ def collect(date: str) -> pd.DataFrame:
     df.index.name = "ticker"
     if df["close"].fillna(0).sum() == 0:
         raise RuntimeError(f"{date}: 시세 데이터가 비어 있습니다 (휴장일이거나 KRX 로그인 실패)")
+    # 5·20거래일 전 종가 대비 등락 — 휴장일을 건너뛴 '거래일' 기준, KRX에서 직접 조회
+    biz = business_days(date, max(LOOKBACKS) + 1)
+    for n in LOOKBACKS:
+        base = _closes_on(biz[-1 - n], cached)
+        df[f"ret_{n}d"] = df["close"] / base.reindex(df.index) - 1
     return df
+
+
+LOOKBACKS = (5, 20)
+
+
+def _closes_on(day: str, cached=lambda d: None) -> pd.Series:
+    snap = cached(day)
+    if snap is not None:
+        return snap["close"]
+    df = _stock().get_market_ohlcv(day, market="ALL")
+    df.index = df.index.astype(str).str.zfill(6)
+    return df["종가"]
 
 
 def recent_closes(date: str, tickers: list[str], days: int = config.PRICE_HISTORY_DAYS,
@@ -158,14 +182,14 @@ def recent_closes(date: str, tickers: list[str], days: int = config.PRICE_HISTOR
     return out
 
 
-def sector_map(date: str) -> pd.Series:
-    """종목코드 -> KRX 업종명."""
+def sector_map(date: str) -> pd.DataFrame:
+    """종목코드 -> 업종명, 종목명 (당일 KRX 업종 분류표. 종목명 캐시로도 쓴다)."""
     stock = _stock()
     parts = []
     for m in MARKETS:
         df = stock.get_market_sector_classifications(date, m)
         df.index = df.index.astype(str).str.zfill(6)
-        parts.append(df["업종명"])
+        parts.append(df[["업종명", "종목명"]].rename(columns={"업종명": "sector", "종목명": "name"}))
     out = pd.concat(parts)
     out.index.name = "ticker"
     return out[~out.index.duplicated()]
@@ -182,7 +206,7 @@ def theme_members(date: str) -> dict[str, dict]:
         except Exception as e:
             print(f"  테마 '{theme}'({etf}) 구성 조회 실패: {e}", file=sys.stderr)
             continue
-        tickers = [t for t in pdf.index.astype(str) if t.isdigit() and len(t) == 6]
+        tickers = [t for t in pdf.index.astype(str) if TICKER_RE.match(t)]
         out[theme] = {"etf": etf, "etf_name": str(name), "tickers": tickers}
         print(f"  테마 {theme}: {name} ({len(tickers)}종목)")
     return out

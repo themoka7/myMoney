@@ -53,7 +53,10 @@ def save_day(date: str, snap: pd.DataFrame, top: dict, universe_size: int,
     snap_dir.mkdir(parents=True, exist_ok=True)
     top_dir.mkdir(parents=True, exist_ok=True)
     snap.to_csv(snap_dir / f"{date}.csv.gz", encoding="utf-8")
-    payload = {"date": date, "universe_size": universe_size, "categories": top}
+    from .score import SCORE_VERSION
+
+    payload = {"date": date, "universe_size": universe_size, "categories": top,
+               "score_version": SCORE_VERSION if "eps_1y" in snap.columns else {"value": "v1"}}
     if prices is not None:
         payload["prices"] = prices  # TOP N 종목의 직전 거래일 종가들
     (top_dir / f"{date}.json").write_text(
@@ -65,20 +68,37 @@ def load_tops(top_dir: Path = TOP_DIR) -> dict[str, dict]:
     tops = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in sorted(top_dir.glob("*.json"))}
     # 예전에 종목명 없이(NaN) 저장된 항목은 다른 날 이름이나 종목코드로 메운다
     names = {it["ticker"]: it["name"] for day in tops.values() for items in day["categories"].values()
-             for it in items if isinstance(it.get("name"), str)}
+             for it in items if isinstance(it.get("name"), str) and it["name"] != it["ticker"]}
     for day in tops.values():
         for items in day["categories"].values():
             for it in items:
-                if not isinstance(it.get("name"), str):
-                    it["name"] = names.get(it["ticker"], it["ticker"])
+                if not isinstance(it.get("name"), str) or it["name"] == it["ticker"]:
+                    it["name"] = names.get(it["ticker"]) or unknown_name(it["ticker"])
     return tops
 
 
+_NAMES: dict[str, str] | None = None
+
+
+def unknown_name(ticker: str) -> str:
+    return f"{ticker}(이름 미확인)"
+
+
 def load_snapshot(date: str, snap_dir: Path = SNAP_DIR) -> pd.DataFrame | None:
+    global _NAMES
     p = snap_dir / f"{date}.csv.gz"
     if not p.exists():
         return None
-    return pd.read_csv(p, dtype={"ticker": str}, index_col="ticker")
+    df = pd.read_csv(p, dtype={"ticker": str}, index_col="ticker")
+    missing = [not isinstance(n, str) or n == t for t, n in zip(df.index, df["name"])]
+    if any(missing):  # 예전 스냅샷의 빈 종목명은 종목명 캐시로, 그래도 없으면 '코드(이름 미확인)'으로
+        if _NAMES is None:
+            from .flow import load_names
+            _NAMES = load_names()
+        df["name"] = df["name"].astype(object)
+        for t in df.index[missing]:
+            df.loc[t, "name"] = _NAMES.get(t) or unknown_name(t)
+    return df
 
 
 # ---------- 순위 변화 ----------
@@ -119,7 +139,7 @@ def _mean_ret(num: pd.Series, den: pd.Series) -> float | None:
     return float(r.mean()) if len(r) else None
 
 
-def performance(tops: dict[str, dict], load=load_snapshot) -> dict[str, list[dict]]:
+def performance(tops: dict[str, dict], load=load_snapshot, cats: list[str] | None = None) -> dict[str, list[dict]]:
     """d일 TOP N을 d+1일에 보유했다면? 을 카테고리별로 계산한다.
 
     - c2c     : d 종가 → d+1 종가 (이론값. 데이터가 장 마감 후 나오므로 실제로는 d 종가 매수 불가)
@@ -129,8 +149,9 @@ def performance(tops: dict[str, dict], load=load_snapshot) -> dict[str, list[dic
     - intraday_net: intraday - 왕복비용 (매일 사고 팖)
     'universe'는 같은 날 유니버스 전체 동일가중 평균 (비교 기준선).
     """
+    cats = cats or list(config.CATEGORIES)
     dates = sorted(tops)
-    result: dict[str, list[dict]] = {cat: [] for cat in config.CATEGORIES}
+    result: dict[str, list[dict]] = {cat: [] for cat in cats}
     result["universe"] = []
     prev_members: dict[str, set] = {}
 
@@ -140,7 +161,7 @@ def performance(tops: dict[str, dict], load=load_snapshot) -> dict[str, list[dic
             prev_members = {}
             continue
         groups = {cat: [it["ticker"] for it in tops[d0]["categories"].get(cat, [])]
-                  for cat in config.CATEGORIES}
+                  for cat in cats}
         groups["universe"] = list(filter_universe(s0).index)
 
         for cat, tickers in groups.items():
@@ -234,6 +255,46 @@ def followup(tops: dict[str, dict], date: str, load=load_snapshot,
 
 # ---------- 대시보드 데이터 ----------
 
+def _value_v1_tops(tops: dict, load) -> dict:
+    from .score import filter_universe, value_v1
+
+    out = {}
+    for d in sorted(tops):
+        snap = load(d)
+        if snap is None:
+            continue
+        v = value_v1(filter_universe(snap)).dropna().sort_values(ascending=False).head(config.TOP_N)
+        out[d] = {"categories": {"value_v1": [{"ticker": t} for t in v.index]}}
+    return out
+
+
+def _attach_returns(days: dict, load) -> None:
+    """TOP N 항목에 5·20거래일 등락을 붙인다 (스냅샷의 ret_5d/ret_20d — KRX 거래일 기준)."""
+    for d, day in days.items():
+        snap = load(d)
+        if snap is None:
+            continue
+        for items in day["categories"].values():
+            for it in items:
+                for n in (5, 20):
+                    col = f"ret_{n}d"
+                    if col in snap.columns and it["ticker"] in snap.index and pd.notna(snap.loc[it["ticker"], col]):
+                        it[f"ret{n}"] = float(snap.loc[it["ticker"], col])
+
+
+def _data_checks(snap: pd.DataFrame) -> dict:
+    """리포트에 그대로 싣기 전에 사람이 봐야 할 이상치."""
+    turn = snap["trading_value"] / snap["market_cap"].where(snap["market_cap"] > 0)
+    hi = snap[turn > 1.0].assign(turn=turn).sort_values("turn", ascending=False)
+    unnamed = snap[snap["name"].astype(str).str.endswith("(이름 미확인)")]
+    return {
+        "high_turnover": [{"ticker": t, "name": r["name"], "turnover": float(r["turn"]),
+                           "value": float(r["trading_value"]), "market_cap": float(r["market_cap"])}
+                          for t, r in hi.head(20).iterrows()],
+        "unnamed": list(unnamed.index),
+    }
+
+
 def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
                site_file: Path = SITE_FILE, meta_dir: Path | None = None) -> dict:
     from . import explain, flow
@@ -259,6 +320,20 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
         "days": annotate_changes(tops),
         "performance": performance(tops, load=load),
     }
+    # 가치 v1(PER·PBR만)도 같은 날짜들로 다시 뽑아 성과를 나란히 비교한다 (점수 버전 비교)
+    v1_tops = _value_v1_tops(tops, load)
+    if v1_tops:
+        data["performance"]["value_v1"] = performance(v1_tops, load=load, cats=["value_v1"])["value_v1"]
+    _attach_returns(data["days"], load)
+
+    # 🧪 해설 규칙 자기검증: 성적을 먼저 매겨야 해설 문장에 근거를 붙일 수 있다
+    from . import signals
+    sig = signals.build(list(tops), load)
+    if tops and site_file == SITE_FILE:
+        signals.save(sig)
+    data["scorecard"] = signals.scorecard(sig)
+    data["_signals"] = sig  # Release가 날짜별 '그 시점 성적'을 다시 계산할 때 쓴다 (JSON에는 안 씀)
+    explain.set_scorecard(data["scorecard"])
     data["prices"] = {d: price_history(tops, d, load=load) for d in tops}
     groups = {"market": flow.market_groups(load(max(tops)) if tops else None), **flow.load_groups(meta_dir)}
     data["flows"] = {kind: flow.compute(list(tops), load, members) for kind, members in groups.items()}
@@ -273,10 +348,13 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
                         r["notes"] = [t for t, _ in ns]
     if tops:
         data["followup"] = followup(tops, max(tops), load=load)
+    data["theme_overlap"] = flow.theme_overlap(groups.get("theme", {}))
+    data["checks"] = {d: _data_checks(load(d)) for d in sorted(tops)[-SITE_MEMBER_DAYS:] if load(d) is not None}
     site_file.parent.mkdir(parents=True, exist_ok=True)
     # 대시보드 파일에는 테마 구성 종목만, 최근 SITE_MEMBER_DAYS일치만 (Release는 메모리의 전체 데이터를 쓴다)
     recent = sorted(data["members"])[-SITE_MEMBER_DAYS:]
-    site = {**data, "members": {d: {"theme": data["members"][d].get("theme", {})} for d in recent}}
+    site = {k: v for k, v in data.items() if not k.startswith("_")}
+    site["members"] = {d: {"theme": data["members"][d].get("theme", {})} for d in recent}
     site_file.write_text(json.dumps(_compact(clean_json(site)), ensure_ascii=False, separators=(",", ":"),
                                     allow_nan=False),
                          encoding="utf-8")

@@ -242,10 +242,11 @@ def test_release_notes_flow_section(tmp_path):
         {"반도체": {"etf": "091160", "etf_name": "KODEX 반도체", "tickers": list(s.index[:15])}}), encoding="utf-8")
     site = track.build_site(top_dir=top_dir, snap_dir=snap_dir, site_file=tmp_path / "h.json", meta_dir=meta)
     md = release_notes(site, "20261013")
-    assert "돈의 흐름" in md and "KODEX 반도체" in md and "<summary><b>전기·전자</b>" in md
-    assert md.count("<summary><b>반도체</b>") == 1
-    assert md.index("시장 전체") < md.index("돈의 흐름") < md.index("### 가치")
-    assert "오늘의 숲" in md and "| KOSPI |" in md
+    assert "돈의 흐름" in md and "KODEX 반도체" in md and "<summary><sub>[업종]</sub> <b>전기·전자</b>" in md
+    assert md.count("<b>반도체</b> &nbsp;") == 1
+    assert md.index("## 🌳 시장 전체") < md.index("## 💰 돈의 흐름") < md.index("### 가치")
+    assert "🌳 **숲**" in md and "💰 **돈의 흐름**" in md and "🧰 **이상치**" in md and "| KOSPI |" in md
+    assert "## 🧪 해설 규칙 성적표" in md and "`EVENT_DROP`" in md
 
 
 def test_site_json_has_no_nan_even_with_missing_names(tmp_path):
@@ -264,7 +265,7 @@ def test_site_json_has_no_nan_even_with_missing_names(tmp_path):
     assert "NaN" not in text
     data = _json.loads(text)
     first = data["days"]["20261013"]["categories"]["value"][0]
-    assert first["name"] == first["ticker"]
+    assert first["name"] == f"{first['ticker']}(이름 미확인)"  # 조용히 코드만 내보내지 않는다
 
 
 def test_members_sorted_by_value_with_returns():
@@ -299,7 +300,11 @@ def test_explain_reads_a_one_day_crash_like_a_human():
     assert "대부분(-19.6%)이 오늘 하루에 몰렸다" in text
     assert "평소(20일 평균)의 4.0배" in text and "투매" in text
     assert "화장품 거래의 54%" in text
-    assert "흐름을 바꿀 힘은 아니었다" in text
+    assert "외국인" not in text  # 거래의 4%는 해설하지 않는다 (표의 '미미' 꼬리표로 충분)
+
+    led = {**apr, "foreign_5d": 900e8, "foreign_vs_value": 0.25}
+    assert "외국인 주도" in " ".join(t for t, _ in explain.notes(led, "화장품"))
+    assert explain.notes({**apr, "turnover": 2.9}, "x") == []  # 회전율 100% 초과는 해설 안 함
 
 
 def test_explain_ignores_thin_trading_and_handles_reversal():
@@ -320,3 +325,45 @@ def test_foreign_strength_tag_prevents_misreading():
     assert explain.foreign_strength(0.25, 1e10, 0.1) == "거래 25%·강함"
     assert explain.foreign_strength(-0.12, -1e10, -0.01) == "거래 12%·보통"
     assert explain.foreign_strength(None) == ""
+
+
+def test_value_v2_drops_value_traps():
+    from mymoney.score import value_v1, value_v2
+
+    u = pd.DataFrame({
+        "per": [3.0, 5.0, 8.0, 6.0],
+        "pbr": [0.3, 0.6, 0.9, 0.7],
+        "eps": [100.0, 200.0, 300.0, 150.0],
+        "bps": [5000.0, 1000.0, 1500.0, 1000.0],   # A: ROE 2% (돈을 못 범)
+        "eps_1y": [90.0, 300.0, 200.0, -50.0],      # B: 이익 감소, D: 적자→흑자 전환
+    }, index=["A", "B", "C", "D"])
+    v1, v2 = value_v1(u), value_v2(u)
+    assert v1.idxmax() == "A"                      # v1은 제일 싼 A를 1등으로
+    assert set(v2.dropna().index) == {"C", "D"}    # v2는 함정(A: 저ROE, B: 이익 감소)을 거른다
+
+
+def test_signals_grade_rules_from_later_snapshots():
+    from mymoney import signals
+
+    def snap(close, open_, value):
+        n = len(close)
+        return pd.DataFrame({"name": [f"s{i}" for i in range(n)], "close": close, "open": open_,
+                             "trading_value": value, "market_cap": [1e13] * n, "foreign_net_5d": [0.0] * n},
+                            index=pd.Index([f"T{i}" for i in range(n)], name="ticker"))
+
+    snaps = {
+        "d1": snap([100.0, 100.0], [100.0, 100.0], [100e8, 100e8]),
+        "d2": snap([90.0, 100.0], [99.0, 100.0], [400e8, 100e8]),   # T0: -10% 급락, 거래 4배
+        "d3": snap([93.0, 100.0], [92.0, 100.0], [100e8, 100e8]),   # 다음날 갭 +2.2%, 장중 +1.1%
+    }
+    for d in snaps:
+        snaps[d]["ret_5d"] = [-0.12 if d == "d2" else 0.0, 0.0]
+    sig = signals.build(list(snaps), snaps.get)
+    rules = set(sig[sig["ticker"] == "T0"]["rule_id"])
+    assert {"EVENT_DROP", "CAPITULATION"} <= rules
+    row = sig[(sig["ticker"] == "T0") & (sig["rule_id"] == "EVENT_DROP")].iloc[0]
+    assert row["ret_gap"] == pytest.approx(92 / 90 - 1) and row["ret_c2c"] == pytest.approx(93 / 90 - 1)
+    card = signals.scorecard(sig)
+    assert card["EVENT_DROP"]["n"] == 1 and card["EVENT_DROP"]["hit"] == 1.0
+    assert card["EVENT_DROP"]["verdict"] == "표본 부족"
+    assert signals.verdict("EVENT_DROP", 40, 0.6, 0.02, -0.01).endswith("보이지만 먹을 수 없는 신호)")

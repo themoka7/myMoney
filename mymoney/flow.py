@@ -28,9 +28,12 @@ THEME_FILE = META_DIR / "themes.json"
 
 # ---------- 그룹 정의 저장/로드 ----------
 
-def save_meta(sectors: pd.Series, themes: dict, meta_dir: Path = META_DIR) -> None:
+def save_meta(sectors: pd.DataFrame, themes: dict, meta_dir: Path = META_DIR) -> None:
+    """sectors: index=ticker, columns=[sector, name] (Series면 업종명만)."""
     meta_dir.mkdir(parents=True, exist_ok=True)
-    sectors.rename("sector").to_csv(meta_dir / SECTOR_FILE.name, encoding="utf-8")
+    if isinstance(sectors, pd.Series):
+        sectors = sectors.rename("sector").to_frame()
+    sectors.to_csv(meta_dir / SECTOR_FILE.name, encoding="utf-8")
     (meta_dir / THEME_FILE.name).write_text(json.dumps(themes, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
@@ -39,11 +42,43 @@ def load_groups(meta_dir: Path = META_DIR) -> dict[str, dict[str, list[str]]]:
     groups: dict[str, dict[str, list[str]]] = {"sector": {}, "theme": {}}
     sf, tf = meta_dir / SECTOR_FILE.name, meta_dir / THEME_FILE.name
     if sf.exists():
-        s = pd.read_csv(sf, dtype={"ticker": str}).dropna()
+        s = pd.read_csv(sf, dtype={"ticker": str}).dropna(subset=["sector"])
         groups["sector"] = {k: list(v) for k, v in s.groupby("sector")["ticker"]}
     if tf.exists():
         groups["theme"] = {k: v["tickers"] for k, v in json.loads(tf.read_text(encoding="utf-8")).items()}
     return groups
+
+
+def load_names(meta_dir: Path = META_DIR) -> dict[str, str]:
+    """당일 KRX 업종 분류표에서 받은 종목명 캐시 (매 실행 갱신)."""
+    sf = meta_dir / SECTOR_FILE.name
+    if not sf.exists():
+        return {}
+    s = pd.read_csv(sf, dtype={"ticker": str})
+    if "name" not in s:
+        return {}
+    return dict(zip(s["ticker"], s["name"].astype(str)))
+
+
+def theme_overlap(themes: dict[str, list[str]], threshold: float = 0.8) -> dict[str, dict]:
+    """구성이 거의 같은 테마 쌍. {숨길 테마: {"kept": 남길 테마, "ratio": 겹침률}}.
+
+    겹침률 = 교집합 ÷ 작은 쪽 크기. 설정(THEME_ETFS) 순서상 앞의 테마를 남긴다.
+    """
+    hidden: dict[str, dict] = {}
+    names = list(themes)
+    for i, a in enumerate(names):
+        if a in hidden:
+            continue
+        for b in names[i + 1:]:
+            if b in hidden:
+                continue
+            sa, sb = set(themes[a]), set(themes[b])
+            if sa and sb:
+                r = len(sa & sb) / min(len(sa), len(sb))
+                if r >= threshold:
+                    hidden[b] = {"kept": a, "ratio": r}
+    return hidden
 
 
 def theme_labels(meta_dir: Path = META_DIR) -> dict[str, str]:

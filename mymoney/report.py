@@ -1,9 +1,10 @@
 """하루치 결과를 GitHub Release 본문용 마크다운으로 만든다."""
 from __future__ import annotations
 
-from . import config, explain, flow
+from . import config, explain, flow, signals
 
 NAVER = "https://finance.naver.com/item/main.naver?code={}"
+_SEEN: set[str] = set()  # 이미 해설한 종목 → 뒤에서는 '↑ 위 참고'
 _REFS: set[str] = set()  # 본문에 쓴 종목코드 → 끝에 링크 정의를 한 번씩만 붙인다 (본문 길이 절약)
 
 
@@ -118,7 +119,11 @@ def _ratio(v: float | None, digits: int = 1) -> str:
 
 
 def _turn(v: float | None) -> str:
-    return "–" if v is None else (f"{v:.1%}" if v >= 0.01 else f"{v:.2%}")
+    if v is None:
+        return "–"
+    if v > explain.MAX_TURNOVER:
+        return f"{v:.1%} ⚠️검증 필요"
+    return f"{v:.1%}" if v >= 0.01 else f"{v:.2%}"
 
 
 def _foreign_cell(f5: float | None, fv: float | None, ret5: float | None = None) -> str:
@@ -146,7 +151,7 @@ def _foreign_inline(m: dict, rets: list) -> str:
 
 
 def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = None,
-               sub=lambda n: "", member_note: str = "") -> list[str]:
+               sub=lambda n: "", member_note: str = "", kind: str = "") -> list[str]:
     """분야마다 한 줄 요약을 펼치기 제목으로 쓰고, 누르면 바로 아래에 구성 종목이 열린다."""
     members = members or {}
     lines = ["<sub>각 줄: 시장 비중 · 평소 대비 · 오늘 · 5일 · 20일 등락 · 외국인 5일 · 비중 추이 — "
@@ -156,7 +161,7 @@ def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = 
         rets = flow.series(flows, n, "ret", date)
         shares = [x for x in flow.series(flows, n, "share", date)[-20:] if x is not None]
         summary = (
-            f"<b>{n}</b> &nbsp; <b>{m['share'] * 100:.1f}%</b> · {_heat(m.get('heat'))} · "
+            f"{f'<sub>[{kind}]</sub> ' if kind else ''}<b>{n}</b> &nbsp; <b>{m['share'] * 100:.1f}%</b> · {_heat(m.get('heat'))} · "
             f"오늘 <b>{_pct(m['ret'])}</b> · 5일 {_pct(flow.compound(rets[-5:]))} · "
             f"20일 {_pct(flow.compound(rets[-20:]))} · 외국인 {_foreign_inline(m, rets)} · "
             f"<code>{_spark(shares)}</code>"
@@ -166,7 +171,7 @@ def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = 
         lines += [f"<details><summary>{summary}</summary>", "", f"<sub>{head}{member_note if rows else ''}</sub>", ""]
         if rows:
             lines += _member_table(rows)
-            picks = explain.notable(rows, n, limit=3)
+            picks = explain.notable(rows, n, limit=2, seen=_SEEN)
             if picks:
                 lines += ["", "🔎 **눈여겨볼 점**", ""]
                 for r, ts in picks:
@@ -245,7 +250,7 @@ COLUMN_GUIDE = """<details><summary>📖 종목 표 칸 읽는 법</summary>
 
 
 def _spotlight(members: dict, limit: int = 5) -> list[str]:
-    """테마 전체에서 해석할 거리가 가장 큰 종목들."""
+    """테마 전체에서 신호가 가장 센 종목들. 리포트에서 해설이 처음 나오는 곳이라 여기서 전문을 쓴다."""
     seen, pool = set(), []
     for group, rows in members.items():
         for r in rows:
@@ -254,12 +259,14 @@ def _spotlight(members: dict, limit: int = 5) -> list[str]:
             ns = explain.notes(r, group)
             if ns:
                 seen.add(r["ticker"])
-                pool.append((sum(x for _, x in ns), group, r, [t for t, _ in ns]))
+                pool.append((ns[0][1], group, r, [t for t, _ in ns]))
     pool.sort(key=lambda x: -x[0])
     if not pool:
         return []
-    out = ["### 🔎 오늘 눈에 띈 종목 — 숫자가 말해주는 것", ""]
+    out = ["### 🔎 오늘 눈에 띈 종목 — 숫자가 말해주는 것",
+           "<sub>신호 강도 = 오늘 등락 + 평소 대비 거래 + 외국인 비중 + 이벤트성. 문장 끝 [검증]은 그 해설 규칙의 과거 적중률(맨 아래 성적표)</sub>", ""]
     for _, group, r, ts in pool[:limit]:
+        _SEEN.add(r["ticker"])
         out.append(f"- **{_link(r['name'], r['ticker'])}** <sub>{group} · {_pct(r['ret'])} · "
                    f"거래 {_won(r['value'])}</sub><br>" + " ".join(ts))
     out += ["", f"> ⚠️ {explain.DISCLAIMER}", "", COLUMN_GUIDE, ""]
@@ -273,23 +280,35 @@ def _flow_section(site: dict, date: str, level: int = 0) -> list[str]:
         return []
     out = ["## 💰 돈의 흐름 — 오늘 돈이 어디로 갔나", "", FLOW_INTRO, ""]
     etfs = site.get("theme_etfs", {})
+    hidden = site.get("theme_overlap", {})
+    mem = site.get("members", {}).get(date, {}).get("theme", {})
+    out += _spotlight({n: rows for n, rows in mem.items() if n not in hidden})
     if date in themes and themes[date]:
-        names = sorted(themes[date], key=lambda n: -themes[date][n]["share"])
-        mem = site.get("members", {}).get(date, {}).get("theme", {})
-        out += ["### 테마", "<sub>테마 = 대표 ETF가 담고 있는 종목 묶음. 종목이 여러 테마에 겹칠 수 있다.</sub>", ""]
-        out += _flow_list(themes, names, date, mem, sub=lambda n: etfs.get(n, ""))
-        out += _spotlight(mem)
+        names = sorted((n for n in themes[date] if n not in hidden), key=lambda n: -themes[date][n]["share"])
+        merged = {h["kept"]: f"{n}와 구성 {h['ratio']:.0%} 겹쳐 하나만 표시" for n, h in hidden.items()}
+        out += ["### 테마", "<sub>[테마] = 대표 ETF가 담고 있는 종목 묶음. 종목이 여러 테마에 겹칠 수 있다.</sub>", ""]
+        out += _flow_list(themes, names, date, mem, kind="테마",
+                          sub=lambda n: " · ".join(x for x in [etfs.get(n, ""), merged.get(n, "")] if x))
     if date in sectors and sectors[date]:
         day = sectors[date]
         top = sorted(day, key=lambda n: -day[n]["share"])[:10]
-        hot = sorted((n for n in day if day[n].get("heat") and day[n]["share"] >= 0.01),
-                     key=lambda n: -day[n]["heat"])[:5]
         smem = site.get("members", {}).get(date, {}).get("sector", {}) if level < 2 else {}
         note = " · 거래대금 상위 종목만"
-        out += ["### 섹터 (KRX 업종) — 거래대금 비중 상위 10", ""] + _flow_list(sectors, top, date, smem, member_note=note)
-        if hot:
-            out += ["### 평소보다 돈이 몰린 섹터 TOP5", "<sub>시장 비중 1% 이상 중 '평소 대비' 배수가 큰 순</sub>", ""]
-            out += _flow_list(sectors, hot, date, smem, member_note=note)
+        out += ["### 섹터 — 거래대금 비중 상위 10", "<sub>[업종] = KRX 공식 업종 분류. 같은 이름의 [테마]와는 구성 종목이 달라 숫자가 다르다.</sub>", ""]
+        out += _flow_list(sectors, top, date, smem, member_note=note, kind="업종")
+        cands = sorted((n for n in day if day[n].get("heat") and day[n]["share"] >= 0.01), key=lambda n: -day[n]["heat"])
+        hot = [n for n in cands if day[n]["heat"] >= 1.5][:5]
+        out += ["### 평소보다 돈이 확 몰린 섹터", ""]
+        if not hot:
+            best = f" (가장 높은 곳: {cands[0]} {day[cands[0]]['heat']:.1f}배)" if cands else ""
+            out += [f"오늘은 평소보다 1.5배 이상 몰린 섹터 없음{best}.", ""]
+        else:
+            again = [n for n in hot if n in top]
+            new = [n for n in hot if n not in top]
+            if again:
+                out += ["- " + ", ".join(f"**{n}** {day[n]['heat']:.1f}배" for n in again) + " — ↑ 위 TOP10에 있음", ""]
+            if new:
+                out += _flow_list(sectors, new, date, smem, member_note=note, kind="업종")
     return out
 
 
@@ -329,6 +348,14 @@ def _perf_table(perf: dict, date: str) -> list[str]:
             f"| {label} | {_pct(_cum(s, 'c2c_net'))} | {_pct(_cum(s, 'intraday_net'))} | "
             f"{_pct(_avg(s, 'gap'))} | {_pct(_avg(s, 'intraday'))} | {win:.0%} | {_avg(s, 'turnover'):.0%} |"
         )
+    v1 = upto.get("value_v1", [])
+    if v1:
+        valid = [p for p in v1 if p["c2c_net"] is not None]
+        win = sum(p["c2c_net"] > 0 for p in valid) / len(valid) if valid else 0
+        lines.append(
+            f"| _가치 v1 (PER·PBR만, 비교용)_ | {_pct(_cum(v1, 'c2c_net'))} | {_pct(_cum(v1, 'intraday_net'))} | "
+            f"{_pct(_avg(v1, 'gap'))} | {_pct(_avg(v1, 'intraday'))} | {win:.0%} | {_avg(v1, 'turnover'):.0%} |"
+        )
     u = upto["universe"]
     lines.append(
         f"| _유니버스 평균 (기준선)_ | {_pct(_cum(u, 'c2c'))} | {_pct(_cum(u, 'intraday'))} | "
@@ -337,6 +364,69 @@ def _perf_table(perf: dict, date: str) -> list[str]:
     lines += ["", "> 종가→종가는 데이터가 장 마감 후 나오므로 실제로는 먹을 수 없는 이론값이다. "
                   "결과를 보고 다음날 아침 사서 그날 파는 현실적인 경우는 시가→종가 쪽이다."]
     return lines
+
+
+def _scorecard_section(card: dict) -> list[str]:
+    out = ["## 🧪 해설 규칙 성적표 — 리포트가 한 말, 맞았나?", "",
+           "> 위 🔎 해설의 규칙을 유니버스 전체(거래대금 50억 이상)에 매일 적용하고, 그 뒤 실제 주가로 채점한다. "
+           f"표본 {signals.MIN_SAMPLE}개 미만은 '표본 부족'. 적중률이 50% 근처면 '근거 약함', 45% 미만이면 '반대로 나옴' — "
+           "위 🔎 문장도 이 판정에 맞춰 자동으로 바뀐다(통념을 그대로 반복하지 않는다).", "",
+           "> ⚠️ 기간이 짧거나 한쪽 장세(급락장·급등장)에 몰려 있으면 판정이 치우친다. 표본이 쌓이며 바뀔 수 있다.", "",
+           "| 규칙 | 리포트 문구 | 적중 기준 | 발동 | 채점 | 적중률 | 평균 갭 | 평균 장중 | 평균 다음날 | 평균 5일 | 판정 |",
+           "|---|---|---|--:|--:|--:|--:|--:|--:|--:|---|"]
+    for rule, (claim, hit_def) in signals.RULES.items():
+        c = card.get(rule) or {}
+        hit = "–" if c.get("hit") is None else f"{c['hit']:.0%}"
+        out.append(f"| `{rule}` | {claim} | {hit_def} | {c.get('fired', 0)} | {c.get('n', 0)} | {hit} | "
+                   f"{_pct(c.get('gap'))} | {_pct(c.get('intraday'))} | {_pct(c.get('c2c'))} | {_pct(c.get('d5'))} | "
+                   f"{c.get('verdict', '표본 부족')} |")
+    out += ["", "<sub>갭 = 오늘 종가→다음날 시가(미리 들고 있어야 먹음) · 장중 = 다음날 시가→종가(리포트 보고 실제로 먹을 수 있는 구간). "
+                "갭만 크고 장중이 마이너스면 '보이지만 먹을 수 없는 신호'. 원본 기록: `data/signals.csv`</sub>", ""]
+    return out
+
+
+def _checks_section(checks: dict) -> list[str]:
+    hi, unnamed = checks.get("high_turnover", []), checks.get("unnamed", [])
+    if not hi and not unnamed:
+        return []
+    out = ["## 🧰 데이터 점검", "",
+           "> 리포트에 그대로 믿고 쓰기 전에 사람이 확인해야 할 값. 해설(🔎)과 규칙 채점에서는 제외했다.", ""]
+    if hi:
+        out += ["**회전율 100% 초과** — 하루 거래대금이 시가총액보다 큼. 거래대금·시가총액은 같은 날짜·같은 시장(KRX) 값이라 "
+                "출처 불일치는 아니지만, 이례적이라 검증 대상.", "",
+                "| 종목 | 회전율 | 거래대금 | 시가총액 |", "|---|--:|--:|--:|"]
+        out += [f"| {_link(x['name'], x['ticker'])} | {x['turnover']:.1%} | {_won(x['value'])} | {_won(x['market_cap'])} |"
+                for x in hi]
+        out.append("")
+    if unnamed:
+        out += [f"**종목명 미확인** {len(unnamed)}개: " + ", ".join(f"`{t}`" for t in unnamed), ""]
+    return out
+
+
+def _summary3(site: dict, date: str) -> list[str]:
+    """맨 위 고정 3줄: 숲 / 돈의 흐름 / 이상치."""
+    flows = site.get("flows", {})
+    mk = flows.get("market", {}).get(date, {})
+    lines = []
+    if mk:
+        parts = [f"{n} {_pct(mk[n]['ret'])}" for n in ("KOSPI", "KOSDAQ") if n in mk and mk[n]["ret"] is not None]
+        if "전체" in mk and mk["전체"]["up"] + mk["전체"]["down"]:
+            a = mk["전체"]
+            parts.append(f"오른 종목 {a['up'] / (a['up'] + a['down']):.0%}")
+        lines.append("🌳 **숲** · " + " · ".join(parts))
+    th = {n: m for n, m in flows.get("theme", {}).get(date, {}).items() if n not in site.get("theme_overlap", {})}
+    if th:
+        top = max(th, key=lambda n: th[n]["share"])
+        hot = [n for n in th if (th[n].get("heat") or 0) >= 1.5]
+        s = f"💰 **돈의 흐름** · 가장 몰린 테마 **{top}** (거래대금의 {th[top]['share']:.0%}, {_pct(th[top]['ret'])})"
+        s += (" · 평소보다 확 몰림: " + ", ".join(f"{n} {th[n]['heat']:.1f}배" for n in hot)) if hot else " · 평소보다 확 몰린 테마 없음"
+        lines.append(s)
+    ck = site.get("checks", {}).get(date)
+    if ck is not None:
+        n_hi, n_un = len(ck.get("high_turnover", [])), len(ck.get("unnamed", []))
+        lines.append(f"🧰 **이상치** · 회전율 100% 초과 {n_hi}종목 · 종목명 미확인 {n_un}개"
+                     + (" — 맨 아래 '데이터 점검' 참고" if n_hi or n_un else ""))
+    return ["> " + "<br>".join(lines), ""] if lines else []
 
 
 GLOSSARY = """<details>
@@ -391,6 +481,7 @@ def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
 
 def _render(site: dict, date: str, follow: dict | None, level: int) -> str:
     _REFS.clear()
+    _SEEN.clear()
     body = _render_body(site, date, follow, level)
     refs = "\n".join(f"[{t}]: {NAVER.format(t)}" for t in sorted(_REFS))
     return body + "\n\n" + refs + "\n"
@@ -400,12 +491,18 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
     """level 0: 전부 · 1: 과거 종가 표 10일, 선정 후 추적 15개로 · 2: +섹터 구성 종목 생략 · 3: +선정 후 추적 생략 · 4: +과거 종가 표 생략."""
     day = site["days"][date]
     prices = site.get("prices", {}).get(date, {})
+    # 이 날짜 시점에 확정된 결과만으로 채점 (미래 결과로 과거 리포트를 채점하지 않는다)
+    sig = site.get("_signals")
+    card = signals.scorecard(signals.as_of(sig, date, site["dates"])) if sig is not None else site.get("scorecard", {})
+    explain.set_scorecard(card)
     follow = follow or {}
 
     def series(it):
         return [c for _, c in prices.get(it["ticker"], [])] + [it["close"]]
 
     def _chg(it, n):
+        if it.get(f"ret{n}") is not None:  # KRX 거래일 기준 (기록 누적에 의존하지 않음)
+            return _pct(it[f"ret{n}"])
         s = series(it)
         if len(s) <= n or not s[-1 - n]:
             return "–"
@@ -421,7 +518,7 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
         + f" · 누적 기록 {i + 1}일",
         "",
     ]
-    out = out[:1] + [""] + _headline(site, date) + out[2:]
+    out = out[:1] + [""] + _summary3(site, date) + out[2:]
     out += _forest_section(site, date) + _flow_section(site, date, level)
     out += ["## 🌱 종목 TOP10 — 이제 나무를 보자", "",
             "> 숲(시장)과 돈의 흐름을 본 뒤에, 기준별로 점수가 높은 종목. 시장이 빠지는 날엔 TOP10도 같이 빠지는 게 보통이다.", ""]
@@ -450,6 +547,8 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
         out.append("")
 
     out += ["## 다음날 보유 성과 (누적)", ""] + _perf_table(site["performance"], date)
+    out += [""] + _scorecard_section(card)
+    out += _checks_section(site.get("checks", {}).get(date, {}))
     out += ["", GLOSSARY, "", "---",
             "<sub>점수는 그날 유니버스 안에서의 백분위(0~100). 투자 권유가 아닌 개인 학습 기록입니다.</sub>"]
     return "\n".join(out)
