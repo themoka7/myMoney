@@ -61,7 +61,8 @@ export KRX_ID=...   # KRX 정보데이터시스템(data.krx.co.kr) 계정
 export KRX_PW=...   # pykrx 1.2.x부터 로그인 필요
 
 python -m mymoney run                    # 최근 영업일 수집 → 저장 → 대시보드 데이터 갱신
-python -m mymoney run --date 20261014    # 특정일 (과거 날짜 백필도 가능)
+python -m mymoney run --date 20261014    # 특정일
+python -m mymoney backfill --days 20     # 최근 20영업일 채우기
 python -m mymoney show                   # 저장된 최신 TOP10을 터미널로
 python -m mymoney build                  # data/ 로부터 history.json만 재생성
 python -m mymoney notes                  # Release 본문 마크다운 미리보기
@@ -83,6 +84,10 @@ python -m pytest -q                      # 합성 데이터로 점수·추이 �
 3. **Actions → daily-top10 → Run workflow** 로 첫 실행 (날짜를 넣어 과거 며칠을 백필하면 추이가 바로 보인다)
 
 휴장일에는 가장 가까운 이전 영업일로 잡히고, 이미 수집된 날짜면 건너뛴다.
+장중(16시 이전)에 날짜 없이 실행하면 아직 확정되지 않은 오늘 대신 전 영업일을 수집한다.
+
+**과거 채우기(백필)**: Run workflow 에서 `backfill_days` 에 20을 넣으면 최근 20영업일을 오래된 날부터 채우고,
+날짜별 Release도 모두 만들거나 갱신한다. 순위 변화·연속 진입·선정 후 추적이 바로 의미를 갖는다.
 
 ## 한계 (알고 쓰기)
 

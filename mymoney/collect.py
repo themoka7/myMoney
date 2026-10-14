@@ -5,7 +5,7 @@ pykrx 1.2.x부터는 KRX 정보데이터시스템 로그인이 필요하다.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -20,10 +20,24 @@ def _stock():
     return stock
 
 
+KST = timezone(timedelta(hours=9))
+MARKET_FINAL_HOUR = 16  # 장 마감(15:30) 후 KRX 데이터가 확정되는 시각 근사치
+
+
 def latest_business_day(date: str | None = None) -> str:
-    """date(YYYYMMDD) 이하의 가장 가까운 영업일."""
-    date = date or datetime.now().strftime("%Y%m%d")
+    """date(YYYYMMDD) 이하의 가장 가까운 영업일. date가 없으면 '데이터가 확정된' 가장 최근 영업일."""
+    if date is None:
+        now = datetime.now(KST)
+        if now.hour < MARKET_FINAL_HOUR:  # 장중·장 시작 전이면 오늘은 아직 미확정
+            now -= timedelta(days=1)
+        date = now.strftime("%Y%m%d")
     return _stock().get_nearest_business_day_in_a_week(date, prev=True)
+
+
+def business_days(end: str, count: int) -> list[str]:
+    """end 이하 최근 count개 영업일 (오래된 순)."""
+    days = _stock().get_previous_business_days(fromdate=_shift(end, count * 2 + 15), todate=end)
+    return [pd.Timestamp(x).strftime("%Y%m%d") for x in days][-count:]
 
 
 def _shift(date: str, days: int) -> str:

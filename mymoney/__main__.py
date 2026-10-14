@@ -1,5 +1,6 @@
 """사용법:
     python -m mymoney run [--date YYYYMMDD]   # 수집 → 점수 → 저장 → 대시보드 데이터 갱신
+    python -m mymoney backfill --days 20      # 최근 20영업일 채우기 (있는 날은 건너뜀)
     python -m mymoney build                   # 저장된 데이터로 대시보드 데이터만 재생성
     python -m mymoney show [--date YYYYMMDD]  # 저장된 TOP N을 터미널에 출력
     python -m mymoney notes [--date YYYYMMDD] [--out FILE]  # Release 본문용 마크다운
@@ -12,23 +13,48 @@ import sys
 from . import config, track
 
 
-def cmd_run(args) -> int:
-    from .collect import collect, latest_business_day, recent_closes
+def _collect_day(date: str, force: bool) -> bool:
+    """date 하루를 수집·저장한다. 새로 저장했으면 True."""
+    from .collect import collect, recent_closes
     from .score import score, top_n
 
-    date = latest_business_day(args.date)
-    if (track.TOP_DIR / f"{date}.json").exists() and not args.force:
+    if (track.TOP_DIR / f"{date}.json").exists() and not force:
         print(f"{date}: 이미 수집됨 (--force 로 덮어쓰기)")
-    else:
-        snap = collect(date)
-        scores = score(snap)
-        top = top_n(scores)
-        tickers = sorted({it["ticker"] for items in top.values() for it in items})
-        prices = recent_closes(date, tickers, cached=track.load_snapshot)
-        track.save_day(date, snap, top, universe_size=len(scores), prices=prices)
-        print(f"{date}: 전체 {len(snap)}종목, 유니버스 {len(scores)}종목 저장")
+        return False
+    snap = collect(date)
+    scores = score(snap)
+    top = top_n(scores)
+    tickers = sorted({it["ticker"] for items in top.values() for it in items})
+    prices = recent_closes(date, tickers, cached=track.load_snapshot)
+    track.save_day(date, snap, top, universe_size=len(scores), prices=prices)
+    print(f"{date}: 전체 {len(snap)}종목, 유니버스 {len(scores)}종목 저장")
+    return True
+
+
+def cmd_run(args) -> int:
+    from .collect import latest_business_day
+
+    date = latest_business_day(args.date)
+    _collect_day(date, args.force)
     track.build_site()
     _print_day(date)
+    return 0
+
+
+def cmd_backfill(args) -> int:
+    """최근 N영업일을 오래된 날부터 채운다. 이미 있는 날은 건너뛴다."""
+    from .collect import business_days, latest_business_day
+
+    end = latest_business_day(args.end)
+    days = business_days(end, args.days)
+    print(f"백필 {days[0]} ~ {days[-1]} ({len(days)}영업일)")
+    for d in days:
+        try:
+            _collect_day(d, args.force)
+        except Exception as e:  # 하루 실패가 전체를 막지 않게
+            print(f"{d}: 실패 — {e}", file=sys.stderr)
+    track.build_site()
+    _print_day(end)
     return 0
 
 
@@ -45,7 +71,8 @@ def cmd_notes(args) -> int:
     if not site["dates"]:
         print("저장된 데이터가 없습니다.", file=sys.stderr)
         return 1
-    date = args.date or site["dates"][-1]
+    # 휴장일을 넣으면 그 이전 마지막 기록일로
+    date = max((d for d in site["dates"] if d <= (args.date or "99999999")), default=site["dates"][0])
     follow = track.followup(track.load_tops(), date)
     text = release_notes(site, date, follow)
     if args.out:
@@ -86,6 +113,10 @@ def main(argv=None) -> int:
     r = sub.add_parser("run")
     r.add_argument("--date")
     r.add_argument("--force", action="store_true")
+    b = sub.add_parser("backfill")
+    b.add_argument("--days", type=int, default=20)
+    b.add_argument("--end")
+    b.add_argument("--force", action="store_true")
     sub.add_parser("build")
     s = sub.add_parser("show")
     s.add_argument("--date")
@@ -95,6 +126,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     if args.cmd == "run":
         return cmd_run(args)
+    if args.cmd == "backfill":
+        return cmd_backfill(args)
     if args.cmd == "build":
         return cmd_build(args)
     if args.cmd == "notes":

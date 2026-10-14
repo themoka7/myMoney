@@ -6,12 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "수집일 YYYYMMDD (비우면 가장 최근 영업일)"
+        description: "수집일 YYYYMMDD (비우면 데이터가 확정된 가장 최근 영업일)"
         required: false
       force:
         description: "이미 수집된 날짜도 덮어쓰기"
         type: boolean
         default: false
+      backfill_days:
+        description: "최근 N영업일 백필 (0이면 하루만). 날짜를 넣으면 그날까지 N일"
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -23,6 +27,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -40,11 +45,19 @@ jobs:
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
           TZ: Asia/Seoul
+          INPUT_DATE: ${{ inputs.date }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_BACKFILL: ${{ inputs.backfill_days }}
         run: |
           ARGS=""
-          if [ -n "${{ inputs.date }}" ]; then ARGS="$ARGS --date ${{ inputs.date }}"; fi
-          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
-          python -m mymoney run $ARGS
+          if [ "$INPUT_FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ -n "$INPUT_BACKFILL" ] && [ "$INPUT_BACKFILL" != "0" ]; then
+            if [ -n "$INPUT_DATE" ]; then ARGS="$ARGS --end $INPUT_DATE"; fi
+            python -m mymoney backfill --days "$INPUT_BACKFILL" $ARGS
+          else
+            if [ -n "$INPUT_DATE" ]; then ARGS="$ARGS --date $INPUT_DATE"; fi
+            python -m mymoney run $ARGS
+          fi
 
       - name: 결과 커밋
         run: |
@@ -59,19 +72,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_DATE: ${{ inputs.date }}
+          INPUT_BACKFILL: ${{ inputs.backfill_days }}
         run: |
-          ARGS=""
-          if [ -n "$INPUT_DATE" ]; then ARGS="--date $INPUT_DATE"; fi
-          DATE=$(python -m mymoney notes $ARGS --out notes.md)
-          TAG="daily-$DATE"
-          TITLE="📊 ${DATE:0:4}-${DATE:4:2}-${DATE:6:2} TOP10"
-          ASSET="top10-$DATE.json"
-          cp "data/top10/$DATE.json" "$ASSET"
-          LATEST=$(ls data/top10/*.json | sort | tail -1 | xargs basename | cut -d. -f1)
-          if [ "$DATE" = "$LATEST" ]; then LATEST_FLAG="--latest"; else LATEST_FLAG="--latest=false"; fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TITLE" --notes-file notes.md $LATEST_FLAG
-            gh release upload "$TAG" "$ASSET" --clobber
+          ALL=$(ls data/top10/*.json | sort | xargs -n1 basename | cut -d. -f1)
+          if [ -n "$INPUT_BACKFILL" ] && [ "$INPUT_BACKFILL" != "0" ]; then
+            # 백필이면 순위변화·추적이 새로 생긴 기존 날짜까지 전부 갱신
+            DATES=$ALL
+          elif [ -n "$INPUT_DATE" ]; then
+            DATES=$INPUT_DATE
           else
-            gh release create "$TAG" "$ASSET" --target main --title "$TITLE" --notes-file notes.md $LATEST_FLAG
+            DATES=$(echo "$ALL" | tail -1)
           fi
+          scripts/release.sh $DATES
