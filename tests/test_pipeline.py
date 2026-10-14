@@ -242,7 +242,8 @@ def test_release_notes_flow_section(tmp_path):
         {"반도체": {"etf": "091160", "etf_name": "KODEX 반도체", "tickers": list(s.index[:15])}}), encoding="utf-8")
     site = track.build_site(top_dir=top_dir, snap_dir=snap_dir, site_file=tmp_path / "h.json", meta_dir=meta)
     md = release_notes(site, "20261013")
-    assert "돈의 흐름" in md and "KODEX 반도체" in md and "| 전기·전자 |" in md
+    assert "돈의 흐름" in md and "KODEX 반도체" in md and "<summary><b>전기·전자</b>" in md
+    assert md.count("<summary><b>반도체</b>") == 1
     assert md.index("시장 전체") < md.index("돈의 흐름") < md.index("### 가치")
     assert "오늘의 숲" in md and "| KOSPI |" in md
 

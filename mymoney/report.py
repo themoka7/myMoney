@@ -103,18 +103,37 @@ FLOW_INTRO = """> 💡 **쉽게 말하면** 오늘 시장에서 오간 돈(거�
 > ⚠️ 거래대금은 '사고판 양'이지 '들어온 돈'이 아니다. 급락할 때도 거래대금은 터진다. 그래서 등락률과 같이 봐야 한다."""
 
 
-def _flow_rows(flows: dict, names: list[str], date: str, label=lambda n: n) -> list[str]:
-    lines = ["| 분야 | 거래대금 | 시장 비중 | 평소 대비 | 오늘 | 5일 | 20일 | 외국인 5일 | 비중 추이 (20일) |",
-             "|---|--:|--:|--:|--:|--:|--:|--:|:-:|"]
+def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = None,
+               sub=lambda n: "", member_note: str = "") -> list[str]:
+    """분야마다 한 줄 요약을 펼치기 제목으로 쓰고, 누르면 바로 아래에 구성 종목이 열린다."""
+    members = members or {}
+    lines = ["<sub>각 줄: 시장 비중 · 평소 대비 · 오늘 · 5일 · 20일 등락 · 외국인 5일 · 비중 추이 — "
+             "<b>줄을 누르면 종목이 펼쳐진다</b></sub>", ""]
     for n in names:
         m = flows[date][n]
         rets = flow.series(flows, n, "ret", date)
         shares = [x for x in flow.series(flows, n, "share", date)[-20:] if x is not None]
-        lines.append(
-            f"| {label(n)} | {_won(m['value'])} | {m['share'] * 100:.1f}% | {_heat(m.get('heat'))} | "
-            f"{_pct(m['ret'])} | {_pct(flow.compound(rets[-5:]))} | {_pct(flow.compound(rets[-20:]))} | "
-            f"{_won(m['foreign_5d'], signed=True)} | {_spark(shares)} |"
+        summary = (
+            f"<b>{n}</b> &nbsp; <b>{m['share'] * 100:.1f}%</b> · {_heat(m.get('heat'))} · "
+            f"오늘 <b>{_pct(m['ret'])}</b> · 5일 {_pct(flow.compound(rets[-5:]))} · "
+            f"20일 {_pct(flow.compound(rets[-20:]))} · 외국인 {_won(m['foreign_5d'], signed=True)} · "
+            f"<code>{_spark(shares)}</code>"
         )
+        rows = members.get(n, [])
+        head = " · ".join(x for x in [sub(n), f"거래대금 {_won(m['value'])}", f"{m['n']}종목 거래"] if x)
+        lines += [f"<details><summary>{summary}</summary>", "", f"<sub>{head}{member_note if rows else ''}</sub>", ""]
+        if rows:
+            lines += ["| 종목 | 종가 | 오늘 | 5일 | 거래대금 | 분야 내 거래 비중 | 외국인 5일 |",
+                      "|---|--:|--:|--:|--:|--:|--:|"]
+            for r in rows:
+                lines.append(
+                    f"| [{r['name']}]({NAVER.format(r['ticker'])}) | {r['close']:,.0f} | {_pct(r['ret'])} | "
+                    f"{_pct(r['ret5'])} | {_won(r['value'])} | {_share(r['weight'])} | "
+                    f"{_won(r['foreign_5d'], signed=True)} |"
+                )
+        else:
+            lines.append("_종목 목록 없음 (리포트 길이 제한 또는 데이터 없음)_")
+        lines += ["", "</details>", ""]
     return lines
 
 
@@ -170,21 +189,6 @@ def _share(v: float | None) -> str:
     return "–" if v is None else f"{v:.0%}"
 
 
-def _member_details(title: str, rows: list[dict], note: str = "") -> list[str]:
-    if not rows:
-        return []
-    lines = [f"<details><summary><b>{title}</b> — 종목 {len(rows)}개 펼쳐 보기{note}</summary>", "",
-             "| 종목 | 종가 | 오늘 | 5일 | 거래대금 | 분야 내 거래 비중 | 외국인 5일 |",
-             "|---|--:|--:|--:|--:|--:|--:|"]
-    for r in rows:
-        lines.append(
-            f"| [{r['name']}]({NAVER.format(r['ticker'])}) | {r['close']:,.0f} | {_pct(r['ret'])} | {_pct(r['ret5'])} | "
-            f"{_won(r['value'])} | {_share(r['weight'])} | "
-            f"{_won(r['foreign_5d'], signed=True)} |"
-        )
-    return lines + ["", "</details>", ""]
-
-
 def _flow_section(site: dict, date: str, level: int = 0) -> list[str]:
     flows = site.get("flows", {})
     themes, sectors = flows.get("theme", {}), flows.get("sector", {})
@@ -194,27 +198,20 @@ def _flow_section(site: dict, date: str, level: int = 0) -> list[str]:
     etfs = site.get("theme_etfs", {})
     if date in themes and themes[date]:
         names = sorted(themes[date], key=lambda n: -themes[date][n]["share"])
-        out += ["### 테마", "<sub>테마 = 대표 ETF가 담고 있는 종목 묶음. 종목이 여러 테마에 겹칠 수 있다.</sub>", ""]
-        out += _flow_rows(themes, names, date, label=lambda n: f"{n} <sub>{etfs.get(n, '')}</sub>")
-        out.append("")
         mem = site.get("members", {}).get(date, {}).get("theme", {})
-        for n in names:
-            out += _member_details(n, mem.get(n, []))
+        out += ["### 테마", "<sub>테마 = 대표 ETF가 담고 있는 종목 묶음. 종목이 여러 테마에 겹칠 수 있다.</sub>", ""]
+        out += _flow_list(themes, names, date, mem, sub=lambda n: etfs.get(n, ""))
     if date in sectors and sectors[date]:
         day = sectors[date]
         top = sorted(day, key=lambda n: -day[n]["share"])[:10]
         hot = sorted((n for n in day if day[n].get("heat") and day[n]["share"] >= 0.01),
                      key=lambda n: -day[n]["heat"])[:5]
-        smem = site.get("members", {}).get(date, {}).get("sector", {})
-        out += ["### 섹터 (KRX 업종) — 거래대금 비중 상위 10", ""] + _flow_rows(sectors, top, date) + [""]
-        for n in top if level < 1 else []:
-            out += _member_details(n, smem.get(n, []), " (거래대금 상위)")
+        smem = site.get("members", {}).get(date, {}).get("sector", {}) if level < 1 else {}
+        note = " · 거래대금 상위 종목만"
+        out += ["### 섹터 (KRX 업종) — 거래대금 비중 상위 10", ""] + _flow_list(sectors, top, date, smem, member_note=note)
         if hot:
             out += ["### 평소보다 돈이 몰린 섹터 TOP5", "<sub>시장 비중 1% 이상 중 '평소 대비' 배수가 큰 순</sub>", ""]
-            out += _flow_rows(sectors, hot, date) + [""]
-            for n in hot if level < 1 else []:
-                if n not in top:
-                    out += _member_details(n, smem.get(n, []), " (거래대금 상위)")
+            out += _flow_list(sectors, hot, date, smem, member_note=note)
     return out
 
 
