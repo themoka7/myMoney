@@ -48,13 +48,17 @@ def cmd_backfill(args) -> int:
     end = latest_business_day(args.end)
     days = business_days(end, args.days)
     print(f"백필 {days[0]} ~ {days[-1]} ({len(days)}영업일)")
+    failed = []
     for d in days:
         try:
             _collect_day(d, args.force)
         except Exception as e:  # 하루 실패가 전체를 막지 않게
+            failed.append(d)
             print(f"{d}: 실패 — {e}", file=sys.stderr)
     track.build_site()
     _print_day(end)
+    if failed:
+        print(f"\n실패 {len(failed)}일: {' '.join(failed)} — 다시 실행하면 빠진 날만 채운다", file=sys.stderr)
     return 0
 
 

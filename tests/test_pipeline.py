@@ -168,3 +168,28 @@ def test_release_notes_shows_recent_prices_and_followup(tmp_path):
     md = release_notes(site, "20261013", track.followup(track.load_tops(top_dir), "20261013", load=load))
     assert "최근 거래일 종가" in md and "| 10/8 | 10/9 | **10/13** |" in md
     assert "선정 후 추적" in md and "5일 흐름" in md
+
+
+def test_retrying_wrapper_retries_empty_then_succeeds(monkeypatch):
+    from mymoney import collect
+
+    monkeypatch.setattr(collect.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    class Fake:
+        def get(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError("Expecting value")
+            if calls["n"] == 2:
+                return pd.DataFrame()
+            return pd.DataFrame({"a": [1]})
+
+    assert len(collect._Retrying(Fake()).get()) == 1 and calls["n"] == 3
+
+    class Dead:
+        def get(self):
+            return []
+
+    with pytest.raises(RuntimeError):
+        collect._Retrying(Dead()).get()

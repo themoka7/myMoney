@@ -5,6 +5,8 @@ pykrx 1.2.x부터는 KRX 정보데이터시스템 로그인이 필요하다.
 """
 from __future__ import annotations
 
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -14,10 +16,49 @@ from . import config
 MARKETS = ("KOSPI", "KOSDAQ")
 
 
-def _stock():
-    from pykrx import stock  # 무거운 import는 수집 시점에만
+RETRY_WAITS = (10, 30, 90)  # KRX가 연속 호출을 막으면(비JSON 응답·빈 결과) 쉬었다가 재시도
+CALL_INTERVAL = 0.5
 
-    return stock
+
+class _Retrying:
+    """pykrx.stock 래퍼: 모든 호출에 간격·재시도를 건다. 빈 DataFrame/리스트도 실패로 본다."""
+
+    def __init__(self, mod):
+        self._mod = mod
+
+    def __getattr__(self, name):
+        fn = getattr(self._mod, name)
+
+        def call(*args, **kwargs):
+            last = None
+            for wait in (0, *RETRY_WAITS):
+                if wait:
+                    print(f"  KRX 응답 이상 ({name}: {last}) → {wait}초 후 재시도", file=sys.stderr)
+                time.sleep(wait or CALL_INTERVAL)
+                try:
+                    out = fn(*args, **kwargs)
+                except Exception as e:  # pykrx는 내부 오류를 삼키고 빈 값을 주기도, 던지기도 한다
+                    last = e
+                    continue
+                if (isinstance(out, pd.DataFrame) and out.empty) or (isinstance(out, list) and not out):
+                    last = "빈 결과"
+                    continue
+                return out
+            raise RuntimeError(f"{name} 실패: {last}")
+
+        return call
+
+
+_STOCK = None
+
+
+def _stock():
+    global _STOCK
+    if _STOCK is None:
+        from pykrx import stock  # 무거운 import는 수집 시점에만
+
+        _STOCK = _Retrying(stock)
+    return _STOCK
 
 
 KST = timezone(timedelta(hours=9))
