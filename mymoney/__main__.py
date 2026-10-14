@@ -2,6 +2,7 @@
     python -m mymoney run [--date YYYYMMDD]   # 수집 → 점수 → 저장 → 대시보드 데이터 갱신
     python -m mymoney build                   # 저장된 데이터로 대시보드 데이터만 재생성
     python -m mymoney show [--date YYYYMMDD]  # 저장된 TOP N을 터미널에 출력
+    python -m mymoney notes [--date YYYYMMDD] [--out FILE]  # Release 본문용 마크다운
 """
 from __future__ import annotations
 
@@ -31,6 +32,24 @@ def cmd_run(args) -> int:
 def cmd_build(args) -> int:
     data = track.build_site()
     print(f"history.json 갱신: {len(data['dates'])}일치")
+    return 0
+
+
+def cmd_notes(args) -> int:
+    from .report import release_notes
+
+    site = track.build_site()
+    if not site["dates"]:
+        print("저장된 데이터가 없습니다.", file=sys.stderr)
+        return 1
+    date = args.date or site["dates"][-1]
+    text = release_notes(site, date)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(date)
+    else:
+        print(text)
     return 0
 
 
@@ -66,11 +85,16 @@ def main(argv=None) -> int:
     sub.add_parser("build")
     s = sub.add_parser("show")
     s.add_argument("--date")
+    n = sub.add_parser("notes")
+    n.add_argument("--date")
+    n.add_argument("--out")
     args = p.parse_args(argv)
     if args.cmd == "run":
         return cmd_run(args)
     if args.cmd == "build":
         return cmd_build(args)
+    if args.cmd == "notes":
+        return cmd_notes(args)
     _print_day(args.date)
     return 0
 

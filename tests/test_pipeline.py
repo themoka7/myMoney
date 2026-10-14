@@ -111,3 +111,24 @@ def test_save_and_build_roundtrip(tmp_path):
     assert site.exists()
     assert len(data["performance"]["composite"]) == 1
     assert data["performance"]["universe"][0]["date"] == "20261014"
+
+
+def test_release_notes_contains_tables_and_performance(tmp_path):
+    from mymoney.report import release_notes
+
+    snap_dir, top_dir, site_file = tmp_path / "s", tmp_path / "t", tmp_path / "h.json"
+    for i, d in enumerate(["20261012", "20261013", "20261014"]):
+        s = make_snap(20 + i, n=80)
+        s["market_cap"], s["trading_value"] = 1e12, 1e10
+        sc = score(s)
+        track.save_day(d, s, top_n(sc), len(sc), snap_dir=snap_dir, top_dir=top_dir)
+    site = track.build_site(top_dir=top_dir, snap_dir=snap_dir, site_file=site_file)
+
+    first = release_notes(site, "20261012")
+    assert "첫 기록" in first and "2거래일 이상" in first
+
+    md = release_notes(site, "20261014")
+    assert "전일 비교 기준 2026-10-13" in md
+    for label, _ in config.CATEGORIES.values():
+        assert f"## {label}" in md
+    assert "2일 누적" in md and "유니버스 평균" in md

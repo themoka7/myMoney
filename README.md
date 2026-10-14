@@ -40,6 +40,7 @@ mymoney/
   collect.py    pykrx로 하루치 전종목 스냅샷 수집
   score.py      스냅샷 → 카테고리별 점수, TOP N
   track.py      저장, 순위 변화, 다음날 성과, 대시보드 데이터 생성
+  report.py     Release 본문 마크다운 생성
   __main__.py   CLI
 data/
   snapshots/YYYYMMDD.csv.gz   전종목 스냅샷 (성과 계산의 원천)
@@ -61,6 +62,7 @@ python -m mymoney run                    # 최근 영업일 수집 → 저장 �
 python -m mymoney run --date 20261014    # 특정일 (과거 날짜 백필도 가능)
 python -m mymoney show                   # 저장된 최신 TOP10을 터미널로
 python -m mymoney build                  # data/ 로부터 history.json만 재생성
+python -m mymoney notes                  # Release 본문 마크다운 미리보기
 
 python -m pytest -q                      # 합성 데이터로 점수·추이 로직 테스트
 ```
@@ -69,10 +71,13 @@ python -m pytest -q                      # 합성 데이터로 점수·추이 �
 
 ## 자동화 (GitHub Actions)
 
-`.github/workflows/daily.yml` 이 평일 16:40 KST에 실행되어 결과를 `main`에 커밋한다.
+`.github/workflows/daily.yml` 이 평일 16:40 KST에 실행되어 결과를 `main`에 커밋하고,
+**GitHub Releases** 에 그날의 리포트(`daily-YYYYMMDD`)를 게시한다.
+카테고리별 TOP10 표(전일대비 순위 변동·연속 진입일·이탈 종목)와 누적 성과 요약이 본문에 들어가고,
+원본 JSON이 첨부된다. 저장소의 **Releases** 탭이 날짜별 기록 목록이 된다.
 
 1. **Settings → Secrets and variables → Actions** 에 `KRX_ID`, `KRX_PW` 등록
-2. **Settings → Pages** → Source: *Deploy from a branch*, Branch: `main` / `/docs`
+2. (선택) **Settings → Pages** → Source: *Deploy from a branch*, Branch: `main` / `/docs` — 차트 대시보드
 3. **Actions → daily-top10 → Run workflow** 로 첫 실행 (날짜를 넣어 과거 며칠을 백필하면 추이가 바로 보인다)
 
 휴장일에는 가장 가까운 이전 영업일로 잡히고, 이미 수집된 날짜면 건너뛴다.

@@ -24,9 +24,9 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -54,3 +54,24 @@ jobs:
           if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
           git commit -m "data: $(ls data/top10 | sort | tail -1 | cut -d. -f1) TOP10"
           git push
+
+      - name: Release 게시
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_DATE: ${{ inputs.date }}
+        run: |
+          ARGS=""
+          if [ -n "$INPUT_DATE" ]; then ARGS="--date $INPUT_DATE"; fi
+          DATE=$(python -m mymoney notes $ARGS --out notes.md)
+          TAG="daily-$DATE"
+          TITLE="📊 ${DATE:0:4}-${DATE:4:2}-${DATE:6:2} TOP10"
+          ASSET="top10-$DATE.json"
+          cp "data/top10/$DATE.json" "$ASSET"
+          LATEST=$(ls data/top10/*.json | sort | tail -1 | xargs basename | cut -d. -f1)
+          if [ "$DATE" = "$LATEST" ]; then LATEST_FLAG="--latest"; else LATEST_FLAG="--latest=false"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file notes.md $LATEST_FLAG
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" --target main --title "$TITLE" --notes-file notes.md $LATEST_FLAG
+          fi
