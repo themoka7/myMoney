@@ -108,6 +108,8 @@ def compute(dates: list[str], load, groups: dict[str, list[str]]) -> dict[str, d
         for name, m in out[d].items():
             past = [out[b][name]["share"] for b in base if name in out[b] and out[b][name]["share"]]
             m["heat"] = (m["share"] / (sum(past) / len(past))) if past and m["share"] else None
+            last5 = [out[b][name]["value"] for b in ordered[max(0, i - 4):i] if name in out[b]] + [m["value"]]
+            m["foreign_vs_value"] = (m["foreign_5d"] / sum(last5)) if m.get("foreign_5d") is not None and sum(last5) else None
     return out
 
 
@@ -181,7 +183,7 @@ def members(snap: pd.DataFrame, prev: pd.DataFrame | None, prev5: pd.DataFrame |
 
 def members_by_date(dates: list[str], load, groups: dict[str, dict[str, list[str]]],
                     flows: dict[str, dict], keep_days: int = 60, sector_top: int = 10,
-                    sector_limit: int = 10) -> dict[str, dict]:
+                    sector_limit: int = 8) -> dict[str, dict]:
     """{date: {"theme": {이름: [종목...]}, "sector": {...}}}. 섹터는 비중 상위 sector_top개만, 종목은 sector_limit개까지."""
     ordered = [d for d in sorted(dates) if load(d) is not None]
     out = {}

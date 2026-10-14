@@ -310,3 +310,13 @@ def test_explain_ignores_thin_trading_and_handles_reversal():
     flip = {"ret": -0.10, "ret5": -0.016, "value": 745e8}
     text = " ".join(t for t, _ in explain.notes(flip, "건설"))
     assert "5일 누적(-1.6%)보다 크다" in text and "대부분" not in text
+
+
+def test_foreign_strength_tag_prevents_misreading():
+    from mymoney import explain
+
+    # 에이피알: 22% 빠지는 동안 +341억 샀지만 거래의 4% → 미미, 주가와 반대
+    assert explain.foreign_strength(0.04, 341e8, -0.2268) == "거래 4%·미미·⚠️주가와 반대"
+    assert explain.foreign_strength(0.25, 1e10, 0.1) == "거래 25%·강함"
+    assert explain.foreign_strength(-0.12, -1e10, -0.01) == "거래 12%·보통"
+    assert explain.foreign_strength(None) == ""

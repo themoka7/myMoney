@@ -175,6 +175,21 @@ function render() {
   document.querySelectorAll("tr[data-theme]").forEach((tr) => { tr.onclick = () => toggleMembers(tr); });
 }
 
+function foreignStrength(fv, f5, ret5) {
+  if (fv == null) return "";
+  const a = Math.abs(fv);
+  const level = a < 0.05 ? "미미" : a < 0.10 ? "약함" : a < 0.20 ? "보통" : "강함";
+  let tag = `거래 ${Math.round(a * 100)}%·${level}`;
+  if (f5 != null && ret5 != null && Math.abs(ret5) >= 0.03 && f5 * ret5 < 0) tag += "·⚠️주가와 반대";
+  return tag;
+}
+
+function foreignCell(f5, fv, ret5) {
+  const tag = foreignStrength(fv, f5, ret5);
+  const weak = fv != null && Math.abs(fv) < 0.10;
+  return `<span style="${weak ? "opacity:.55" : ""}">${sgn(f5, fmtWon)}</span>` + (tag ? `<br><span class="muted">${tag}</span>` : "");
+}
+
 function notesHtml(rows) {
   const items = rows.filter((r) => r.notes && r.notes.length).slice(0, 3);
   if (!items.length) return "";
@@ -193,13 +208,13 @@ function toggleMembers(tr) {
       <td>${Math.round(r.close).toLocaleString()}</td><td>${pc(r.ret)}</td><td>${pc(r.ret5)}</td>
       <td>${fmtWon(r.value)}</td><td>${r.value_heat == null ? "–" : r.value_heat.toFixed(1) + "배"}</td>
       <td>${r.turnover == null ? "–" : (r.turnover * 100).toFixed(r.turnover >= 0.01 ? 1 : 2) + "%"}</td>
-      <td>${r.weight == null ? "–" : Math.round(r.weight * 100) + "%"}</td><td>${sgn(r.foreign_5d, fmtWon)}</td>
-      <td>${r.foreign_vs_value == null ? "–" : sgn(r.foreign_vs_value, (x) => Math.round(x * 100) + "%")}</td></tr>`).join("")
+      <td>${r.weight == null ? "–" : Math.round(r.weight * 100) + "%"}</td>
+      <td>${foreignCell(r.foreign_5d, r.foreign_vs_value, r.ret5)}</td></tr>`).join("")
     : `<tr><td class="l" colspan="10">구성 종목 상세는 최근 10거래일만 제공합니다 (지난 날짜는 Releases 참고)</td></tr>`;
   const row = document.createElement("tr");
   row.className = "members";
   row.innerHTML = `<td colspan="5"><div class="tablewrap"><table class="sub">
-    <thead><tr><th class="l">종목</th><th>종가</th><th>오늘</th><th>5일</th><th>거래대금</th><th title="오늘 거래대금 ÷ 최근 20일 평균">평소 대비</th><th title="거래대금 ÷ 시가총액">회전율</th><th>테마 내 비중</th><th>외국인 5일</th><th title="외국인 5일 순매수 ÷ 5일 거래대금">외국인/거래</th></tr></thead>
+    <thead><tr><th class="l">종목</th><th>종가</th><th>오늘</th><th>5일</th><th>거래대금</th><th title="오늘 거래대금 ÷ 최근 20일 평균">평소 대비</th><th title="거래대금 ÷ 시가총액">회전율</th><th>테마 내 비중</th><th title="외국인 5일 순매수와, 그게 5일 거래대금의 몇 %인지. +라도 미미·약함이면 주가를 움직일 힘이 아니다">외국인 5일 (크기)</th></tr></thead>
     <tbody>${body}</tbody></table></div>${notesHtml(rows)}</td>`;
   tr.after(row);
   tr.querySelector(".caret").textContent = "▾";
@@ -214,25 +229,25 @@ function forestHtml() {
   const rows = ["전체", "KOSPI", "KOSDAQ"].filter((n) => mk[n]).map((n) => {
     const m = mk[n];
     return `<tr><td class="l">${n}</td><td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td>
-      <td>🔺${m.up} / 🔻${m.down}</td><td>${fmtWon(m.value)}</td><td>${sgn(m.foreign_5d, fmtWon)}</td></tr>`;
+      <td>🔺${m.up} / 🔻${m.down}</td><td>${fmtWon(m.value)}</td><td>${foreignCell(m.foreign_5d, m.foreign_vs_value, null)}</td></tr>`;
   }).join("");
   const trows = th ? Object.entries(th).sort((a, b) => b[1].share - a[1].share).map(([n, m]) => {
     const heat = m.heat == null ? "–" : m.heat.toFixed(1) + "배" + (m.heat >= 1.5 ? " 🔥" : m.heat <= 0.67 ? " 🧊" : "");
     return `<tr class="clickable" data-theme="${n}" title="눌러서 구성 종목 보기"><td class="l"><span class="caret">▸</span> ${n}</td><td>${(m.share * 100).toFixed(1)}%</td><td>${heat}</td>
-      <td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td><td>${sgn(m.foreign_5d, fmtWon)}</td></tr>`;
+      <td>${sgn(m.ret, (v) => (v * 100).toFixed(2) + "%")}</td><td>${foreignCell(m.foreign_5d, m.foreign_vs_value, null)}</td></tr>`;
   }).join("") : "";
   return `
     <section class="card">
       <h2>🌳 시장 전체 — 숲부터</h2>
       <p class="desc">시장 전체가 빠지는 날엔 좋은 종목도 같이 빠진다. 등락은 시가총액 가중.</p>
-      <div class="tablewrap"><table><thead><tr><th class="l">시장</th><th>등락</th><th>오른/내린 종목</th><th>거래대금</th><th>외국인 5일</th></tr></thead>
+      <div class="tablewrap"><table><thead><tr><th class="l">시장</th><th>등락</th><th>오른/내린 종목</th><th>거래대금</th><th>외국인 5일 (크기)</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     </section>
     ${th ? `<div>
       <section class="card">
         <h2>💰 테마별 돈의 흐름</h2>
         <p class="desc">시장 비중 = 오늘 전체 거래대금 중 그 테마 몫. 평소 대비 = 최근 20일 평균 비중 대비 배수. <b>테마를 누르면 구성 종목이 펼쳐진다.</b></p>
-        <div class="tablewrap"><table><thead><tr><th class="l">테마</th><th>시장 비중</th><th>평소 대비</th><th>오늘</th><th>외국인 5일</th></tr></thead>
+        <div class="tablewrap"><table><thead><tr><th class="l">테마</th><th>시장 비중</th><th>평소 대비</th><th>오늘</th><th>외국인 5일 (크기)</th></tr></thead>
         <tbody>${trows}</tbody></table></div>
       </section>
       <section class="card">

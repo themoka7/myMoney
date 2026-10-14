@@ -87,3 +87,18 @@ def notable(rows: list[dict], group: str, limit: int = 3) -> list[tuple[dict, li
 
 
 DISCLAIMER = "표가 말해주는 건 여기까지(사실). '그래서 싸다/더 빠진다'는 실적·뉴스 같은 다른 근거로 판단해야 한다."
+
+
+# 외국인 순매수의 '크기'를 한눈에: 5일 거래대금 대비 비율로 등급을 매긴다
+FOREIGN_LEVELS = ((0.05, "미미"), (0.10, "약함"), (0.20, "보통"), (float("inf"), "강함"))
+
+
+def foreign_strength(fv: float | None, f5: float | None = None, ret5: float | None = None) -> str:
+    """'거래의 4% · 미미 · ⚠️주가와 반대' 같은 짧은 꼬리표. 방향만 보고 오해하지 않게 한다."""
+    if fv is None:
+        return ""
+    level = next(name for cut, name in FOREIGN_LEVELS if abs(fv) < cut)
+    tag = f"거래 {abs(fv):.0%}·{level}"
+    if f5 is not None and ret5 is not None and abs(ret5) >= 0.03 and f5 * ret5 < 0:
+        tag += "·⚠️주가와 반대"
+    return tag

@@ -64,17 +64,17 @@ FOLLOWUP_ROWS = 25
 BODY_LIMIT = 124_000  # GitHub Release 본문 최대 125,000자
 
 
-def _followup_details(rows: list[dict]) -> list[str]:
+def _followup_details(rows: list[dict], max_rows: int = FOLLOWUP_ROWS, path_len: int = 8) -> list[str]:
     if not rows:
         return []
     lines = ["<details><summary>📌 선정 후 추적 — 최근 TOP10에 들었던 종목은 그 뒤로 어떻게 됐나</summary>", "",
              "처음 TOP10에 든 날의 종가에 샀다고 치고, 그 뒤 매일 종가를 따라간 기록.", "",
              "| 종목 | 최초 선정 | 선정일 종가 | 이후 종가 흐름 | 수익률 | 지금 |",
              "|---|---|--:|---|--:|:-:|"]
-    shown = rows[:FOLLOWUP_ROWS]
+    shown = rows[:max_rows]
     for r in shown:
-        flow = " → ".join(f"{c:,.0f}" for _, c in r["path"][-8:]) or "–"
-        if len(r["path"]) > 8:
+        flow = " → ".join(f"{c:,.0f}" for _, c in r["path"][-path_len:]) or "–"
+        if len(r["path"]) > path_len:
             flow = "… → " + flow
         lines.append(
             f"| {_link(r['name'], r['ticker'])} | {_md(r['first_date'])} | {r['first_close']:,.0f} | "
@@ -104,7 +104,7 @@ def _heat(h: float | None) -> str:
 FLOW_INTRO = """> 💡 **쉽게 말하면** 오늘 시장에서 오간 돈(거래대금) 중 각 분야가 몇 %를 차지했는지. 비중이 크면 그쪽에 관심과 돈이 몰렸다는 뜻.
 >
 > **평소 대비**는 최근 20거래일 평균 비중과 비교한 배수다. 🔥 1.5배 이상 = 평소보다 확 몰림, 🧊 0.67배 이하 = 평소보다 썰렁.
-> **외국인 5일**은 외국인이 최근 5거래일간 산 돈 − 판 돈. 등락률은 회사 크기(시가총액)로 가중한 평균이다.
+> **외국인 5일**은 외국인이 최근 5거래일간 산 돈 − 판 돈. 괄호 안은 그 돈이 같은 기간 거래대금의 몇 %인지와 크기 등급(미미·약함·보통·강함) — **+라고 다 좋은 신호가 아니다. 크기부터 본다.** 등락률은 회사 크기(시가총액)로 가중한 평균이다.
 >
 > ⚠️ 거래대금은 '사고판 양'이지 '들어온 돈'이 아니다. 급락할 때도 거래대금은 터진다. 그래서 등락률과 같이 봐야 한다."""
 
@@ -121,17 +121,28 @@ def _turn(v: float | None) -> str:
     return "–" if v is None else (f"{v:.1%}" if v >= 0.01 else f"{v:.2%}")
 
 
+def _foreign_cell(f5: float | None, fv: float | None, ret5: float | None = None) -> str:
+    """외국인 순매수 금액 + 크기 꼬리표. '샀다=좋다'로 오해하지 않도록 크기를 같이 보여 준다."""
+    tag = explain.foreign_strength(fv, f5, ret5)
+    return _won(f5, signed=True) + (f" <sub>{tag}</sub>" if tag else "")
+
+
 def _member_table(rows: list[dict]) -> list[str]:
-    lines = ["| 종목 | 종가 | 오늘 | 5일 | 거래대금 | 평소 대비 | 회전율 | 분야 내 비중 | 외국인 5일 | 외국인/거래 |",
-             "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|"]
+    lines = ["| 종목 | 종가 | 오늘 | 5일 | 거래대금 | 평소 대비 | 회전율 | 분야 내 비중 | 외국인 5일 (크기) |",
+             "|---|--:|--:|--:|--:|--:|--:|--:|--:|"]
     for r in rows:
         lines.append(
             f"| {_link(r['name'], r['ticker'])} | {r['close']:,.0f} | {_pct(r['ret'])} | "
             f"{_pct(r['ret5'])} | {_won(r['value'])} | {_x(r.get('value_heat'))} | "
             f"{_turn(r.get('turnover'))} | "
-            f"{_share(r['weight'])} | {_won(r['foreign_5d'], signed=True)} | {_ratio(r.get('foreign_vs_value'), 0)} |"
+            f"{_share(r['weight'])} | {_foreign_cell(r['foreign_5d'], r.get('foreign_vs_value'), r.get('ret5'))} |"
         )
     return lines
+
+
+def _foreign_inline(m: dict, rets: list) -> str:
+    tag = explain.foreign_strength(m.get("foreign_vs_value"), m.get("foreign_5d"), flow.compound(rets[-5:]))
+    return _won(m.get("foreign_5d"), signed=True) + (f"({tag})" if tag else "")
 
 
 def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = None,
@@ -147,7 +158,7 @@ def _flow_list(flows: dict, names: list[str], date: str, members: dict | None = 
         summary = (
             f"<b>{n}</b> &nbsp; <b>{m['share'] * 100:.1f}%</b> · {_heat(m.get('heat'))} · "
             f"오늘 <b>{_pct(m['ret'])}</b> · 5일 {_pct(flow.compound(rets[-5:]))} · "
-            f"20일 {_pct(flow.compound(rets[-20:]))} · 외국인 {_won(m['foreign_5d'], signed=True)} · "
+            f"20일 {_pct(flow.compound(rets[-20:]))} · 외국인 {_foreign_inline(m, rets)} · "
             f"<code>{_spark(shares)}</code>"
         )
         rows = members.get(n, [])
@@ -185,7 +196,8 @@ def _forest_section(site: dict, date: str) -> list[str]:
         vheat = m["value"] / (sum(vals) / len(vals)) if vals else None
         lines.append(
             f"| {n} | {_pct(m['ret'])} | {_pct(flow.compound(rets[-5:]))} | {_pct(flow.compound(rets[-20:]))} | "
-            f"🔺{m['up']} / 🔻{m['down']} | {_won(m['value'])} | {_heat(vheat)} | {_won(m['foreign_5d'], signed=True)} |"
+            f"🔺{m['up']} / 🔻{m['down']} | {_won(m['value'])} | {_heat(vheat)} | "
+            f"{_foreign_cell(m['foreign_5d'], m.get('foreign_vs_value'), flow.compound(rets[-5:]))} |"
         )
     lines += ["", "<sub>평소 대비 = 최근 20거래일 평균 거래대금 대비. 오른/내린 종목 수는 전 기록일 종가 대비.</sub>", ""]
     return lines
@@ -227,8 +239,7 @@ COLUMN_GUIDE = """<details><summary>📖 종목 표 칸 읽는 법</summary>
 | 평소 대비 | 오늘 거래대금 ÷ 최근 20일 평균 | 3배 이상이면 무슨 일이 있었다는 뜻 |
 | 회전율 | 거래대금 ÷ 시가총액 | 회사 몸값 중 몇 %가 하루에 주인이 바뀌었나 |
 | 분야 내 비중 | 테마·섹터 거래대금 중 이 종목 몫 | 40% 넘으면 분야 전체보다 이 종목 개별 이슈 |
-| 외국인 5일 | 외국인 5일 순매수(산 돈 − 판 돈) | 방향만 보지 말고 크기를 같이 본다 |
-| 외국인/거래 | 외국인 5일 순매수 ÷ 5일 거래대금 | ±10% 미만이면 방향과 무관하게 영향력 작음, ±20% 이상이면 외국인 주도 |
+| 외국인 5일 (크기) | 외국인 5일 순매수(산 돈 − 판 돈)와, 그게 5일 거래대금의 몇 %인지 | **+면 "좋다"로 읽기 쉽지만 크기를 먼저 본다.** 미미(<5%)·약함(<10%)이면 방향과 상관없이 주가를 움직일 힘이 아니다. 보통(<20%)·강함(≥20%)부터 외국인이 흐름을 만든 것. ⚠️주가와 반대 = 주가는 빠졌는데 외국인은 샀다(또는 그 반대) — 이때 특히 크기를 확인 |
 
 </details>"""
 
@@ -386,7 +397,7 @@ def _render(site: dict, date: str, follow: dict | None, level: int) -> str:
 
 
 def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
-    """level 0: 전부 · 1: 과거 종가 표 10일로 · 2: +섹터 구성 종목 생략 · 3: +선정 후 추적 생략 · 4: +과거 종가 표 생략."""
+    """level 0: 전부 · 1: 과거 종가 표 10일, 선정 후 추적 15개로 · 2: +섹터 구성 종목 생략 · 3: +선정 후 추적 생략 · 4: +과거 종가 표 생략."""
     day = site["days"][date]
     prices = site.get("prices", {}).get(date, {})
     follow = follow or {}
@@ -431,7 +442,8 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
                 f"{_spark(series(it))} | {_chg(it, 5)} | {_chg(it, 20)} | {it['streak']}일 |"
             )
         out += [""] + (_price_details(items, prices, date, days=20 if level < 1 else 10) if level < 4 else []) \
-            + (_followup_details(follow.get(cat, [])) if level < 3 else [])
+            + (_followup_details(follow.get(cat, []), *((FOLLOWUP_ROWS, 8) if level < 1 else (15, 5)))
+               if level < 3 else [])
         dropped = day["dropped"].get(cat, [])
         if dropped:
             out += ["", "이탈: " + ", ".join(f"{x['name']}({x['prev_rank']}위)" for x in dropped)]
