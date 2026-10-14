@@ -23,11 +23,14 @@ SITE_FILE = ROOT / "docs" / "data" / "history.json"
 # ---------- 저장 ----------
 
 def save_day(date: str, snap: pd.DataFrame, top: dict, universe_size: int,
-             snap_dir: Path = SNAP_DIR, top_dir: Path = TOP_DIR) -> None:
+             snap_dir: Path = SNAP_DIR, top_dir: Path = TOP_DIR,
+             prices: dict | None = None) -> None:
     snap_dir.mkdir(parents=True, exist_ok=True)
     top_dir.mkdir(parents=True, exist_ok=True)
     snap.to_csv(snap_dir / f"{date}.csv.gz", encoding="utf-8")
     payload = {"date": date, "universe_size": universe_size, "categories": top}
+    if prices is not None:
+        payload["prices"] = prices  # TOP N 종목의 직전 거래일 종가들
     (top_dir / f"{date}.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
     )
@@ -133,6 +136,48 @@ def performance(tops: dict[str, dict], load=load_snapshot) -> dict[str, list[dic
     return result
 
 
+# ---------- 선정 후 추적 ----------
+
+def followup(tops: dict[str, dict], date: str, load=load_snapshot,
+             window: int = 20) -> dict[str, list[dict]]:
+    """최근 window 기록일 동안 TOP N에 들었던 종목을, 처음 선정된 날부터 date까지 매일 종가로 추적한다.
+
+    {cat: [{ticker, name, first_date, first_close, path: [[date, close], ...], ret, still_in}]}
+    path는 선정일 다음 기록일부터 date까지.
+    """
+    dates = [d for d in sorted(tops) if d <= date]
+    past = dates[-window - 1:-1]  # 오늘 제외
+    if not past:
+        return {cat: [] for cat in config.CATEGORIES}
+    later = [d for d in dates if d > past[0]]
+    snaps = {d: load(d) for d in later}
+    today = {cat: {it["ticker"] for it in tops[date]["categories"].get(cat, [])} for cat in config.CATEGORIES}
+
+    out: dict[str, list[dict]] = {}
+    for cat in config.CATEGORIES:
+        first: dict[str, dict] = {}
+        for d in past:
+            for it in tops[d]["categories"].get(cat, []):
+                first.setdefault(it["ticker"], {"date": d, **it})
+        rows = []
+        for t, f in first.items():
+            path = []
+            for d in later:
+                s = snaps.get(d)
+                if d > f["date"] and s is not None and t in s.index:
+                    path.append([d, float(s.loc[t, "close"])])
+            last = path[-1][1] if path else None
+            rows.append({
+                "ticker": t, "name": f["name"], "first_date": f["date"], "first_close": f["close"],
+                "path": path,
+                "ret": None if last is None or not f["close"] else last / f["close"] - 1,
+                "still_in": t in today[cat],
+            })
+        rows.sort(key=lambda r: (r["first_date"], -(r["ret"] or 0)), reverse=True)
+        out[cat] = rows
+    return out
+
+
 # ---------- 대시보드 데이터 ----------
 
 def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
@@ -149,7 +194,10 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
         "dates": sorted(tops),
         "days": annotate_changes(tops),
         "performance": performance(tops, load=lambda d: load_snapshot(d, snap_dir)),
+        "prices": {d: tops[d].get("prices", {}) for d in tops},
     }
+    if tops:
+        data["followup"] = followup(tops, max(tops), load=lambda d: load_snapshot(d, snap_dir))
     site_file.parent.mkdir(parents=True, exist_ok=True)
     site_file.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return data

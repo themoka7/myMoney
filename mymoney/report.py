@@ -23,6 +23,55 @@ def _pct(v: float | None) -> str:
     return "–" if v is None else f"{v * 100:+.2f}%"
 
 
+SPARK = "▁▂▃▄▅▆▇█"
+
+
+def _spark(vals: list[float]) -> str:
+    if len(vals) < 2:
+        return "–"
+    lo, hi = min(vals), max(vals)
+    if hi == lo:
+        return SPARK[3] * len(vals)
+    return "".join(SPARK[round((v - lo) / (hi - lo) * (len(SPARK) - 1))] for v in vals)
+
+
+def _md(d: str) -> str:
+    return f"{int(d[4:6])}/{int(d[6:])}"
+
+
+def _price_details(items: list[dict], prices: dict, date: str) -> list[str]:
+    hist = {it["ticker"]: prices.get(it["ticker"], []) for it in items}
+    cols = sorted({d for h in hist.values() for d, _ in h})
+    if not cols:
+        return []
+    lines = ["<details><summary>📅 최근 거래일 종가 (전날·그 전날…)</summary>", "",
+             "| 종목 | " + " | ".join(_md(d) for d in cols) + f" | **{_md(date)}** |",
+             "|---|" + "--:|" * (len(cols) + 1)]
+    for it in items:
+        h = dict((d, c) for d, c in hist[it["ticker"]])
+        cells = [f"{h[d]:,.0f}" if d in h else "–" for d in cols]
+        lines.append(f"| {it['name']} | " + " | ".join(cells) + f" | **{it['close']:,.0f}** |")
+    return lines + ["", "</details>", ""]
+
+
+def _followup_details(rows: list[dict]) -> list[str]:
+    if not rows:
+        return []
+    lines = ["<details><summary>📌 선정 후 추적 — 최근 TOP10에 들었던 종목은 그 뒤로 어떻게 됐나</summary>", "",
+             "처음 TOP10에 든 날의 종가에 샀다고 치고, 그 뒤 매일 종가를 따라간 기록.", "",
+             "| 종목 | 최초 선정 | 선정일 종가 | 이후 종가 흐름 | 수익률 | 지금 |",
+             "|---|---|--:|---|--:|:-:|"]
+    for r in rows:
+        flow = " → ".join(f"{c:,.0f}" for _, c in r["path"][-8:]) or "–"
+        if len(r["path"]) > 8:
+            flow = "… → " + flow
+        lines.append(
+            f"| [{r['name']}]({NAVER.format(r['ticker'])}) | {_md(r['first_date'])} | {r['first_close']:,.0f} | "
+            f"{flow} | {_pct(r['ret'])} | {'TOP10' if r['still_in'] else '이탈'} |"
+        )
+    return lines + ["", "</details>", ""]
+
+
 def _cum(series: list[dict], key: str) -> float | None:
     vals = [p[key] for p in series if p[key] is not None]
     if not vals:
@@ -78,9 +127,14 @@ GLOSSARY = """<details>
 |---|---|
 | 점수 | 0~100. 그날 비교 대상 종목들 사이에서의 **상대 등수**를 백분율로 바꾼 것. 90점 = 상위 10% 안. 절대 평가가 아니라서 시장 전체가 나빠도 누군가는 100점이다 |
 | 전일대비 | 🆕 오늘 처음 TOP10 진입 · 🔺 어제보다 순위 상승 · 🔻 순위 하락 · – 그대로 |
+| 5일 흐름 | 최근 5거래일 + 오늘 종가를 막대 높이로 그린 것 (▁ 낮음 → █ 높음). 표 아래 "최근 거래일 종가"를 펼치면 날짜별 실제 가격이 나온다 |
+| 5일 등락 | 5거래일 전 종가 대비 오늘 종가 변화율 |
 | 연속 | 며칠째 연속으로 TOP10에 들어 있는지. 길수록 그 특성이 꾸준하다는 뜻 |
 | 이탈 | 어제는 TOP10이었는데 오늘 빠진 종목 |
 | 시장 | KOSPI(유가증권시장, 대형주 위주) / KOSDAQ(코스닥, 중소형·기술주 위주) |
+
+**선정 후 추적**: 최근 20일 기록 중 TOP10에 한 번이라도 든 종목을, 처음 든 날 종가에 샀다고 치고 그 뒤 매일 종가를 이어 붙인 것.
+"지금"이 이탈이어도 계속 따라간다. 뽑힌 뒤 실제로 올랐는지 확인하는 용도.
 
 **비교 대상(유니버스)**: 너무 작거나 거래가 적은 종목은 원하는 가격에 사고팔기 어려워서 뺐다.
 시가총액(주가 × 주식 수 = 회사 몸값) 3천억 원 이상, 그날 거래대금 10억 원 이상, 우선주 제외.
@@ -105,9 +159,19 @@ GLOSSARY = """<details>
 </details>"""
 
 
-def release_notes(site: dict, date: str) -> str:
-    """site: track.build_site() 반환값."""
+def release_notes(site: dict, date: str, follow: dict | None = None) -> str:
+    """site: track.build_site() 반환값. follow: track.followup() 결과."""
     day = site["days"][date]
+    prices = site.get("prices", {}).get(date, {})
+    follow = follow or {}
+
+    def series(it):
+        return [c for _, c in prices.get(it["ticker"], [])] + [it["close"]]
+
+    def _chg(it):
+        s = series(it)
+        return _pct(s[-1] / s[0] - 1) if len(s) > 1 and s[0] else "–"
+
     dates = site["dates"]
     i = dates.index(date)
     prev = _fmt_date(dates[i - 1]) if i > 0 else None
@@ -126,13 +190,15 @@ def release_notes(site: dict, date: str) -> str:
         if not items:
             out += ["_데이터 없음_", ""]
             continue
-        out += ["| 순위 | 전일대비 | 종목 | 시장 | 점수 | 종가 | 연속 |",
-                "|--:|:-:|---|---|--:|--:|--:|"]
+        out += ["| 순위 | 전일대비 | 종목 | 시장 | 점수 | 종가 | 5일 흐름 | 5일 등락 | 연속 |",
+                "|--:|:-:|---|---|--:|--:|:-:|--:|--:|"]
         for it in items:
             out.append(
                 f"| {it['rank']} | {_move(it)} | [{it['name']}]({NAVER.format(it['ticker'])}) `{it['ticker']}` | "
-                f"{it['market']} | {it['score']:.1f} | {it['close']:,.0f} | {it['streak']}일 |"
+                f"{it['market']} | {it['score']:.1f} | {it['close']:,.0f} | "
+                f"{_spark(series(it))} | {_chg(it)} | {it['streak']}일 |"
             )
+        out += [""] + _price_details(items, prices, date) + _followup_details(follow.get(cat, []))
         dropped = day["dropped"].get(cat, [])
         if dropped:
             out += ["", "이탈: " + ", ".join(f"{x['name']}({x['prev_rank']}위)" for x in dropped)]

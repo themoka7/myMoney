@@ -131,7 +131,7 @@ function render() {
     return `<tr><td>${it.rank}</td><td>${move}</td>
       <td class="l">${it.name}<span class="code">${it.ticker}</span></td>
       <td class="l">${it.market}</td><td>${it.score.toFixed(1)}</td>
-      <td>${Math.round(it.close).toLocaleString()}</td><td>${it.streak}일</td></tr>`;
+      <td>${Math.round(it.close).toLocaleString()}</td><td>${chg5(it)}</td><td>${it.streak}일</td></tr>`;
   }).join("");
   const dropped = (day.dropped[cat] || []).map((x) => `${x.name}(${x.prev_rank}위)`).join(", ");
 
@@ -141,7 +141,7 @@ function render() {
       <p class="desc">${meta.desc}</p>
       ${meta.easy ? `<p class="guide">💡 ${md(meta.easy)}<br>⚠️ ${md(meta.caution)}</p>` : ""}
       ${items.length ? `<div class="tablewrap"><table>
-        <thead><tr><th>순위</th><th>전일대비</th><th class="l">종목</th><th class="l">시장</th><th>점수</th><th>종가</th><th>연속</th></tr></thead>
+        <thead><tr><th>순위</th><th>전일대비</th><th class="l">종목</th><th class="l">시장</th><th>점수</th><th>종가</th><th>5일 등락</th><th>연속</th></tr></thead>
         <tbody>${rows}</tbody></table></div>` : `<div class="empty">해당 카테고리 데이터 없음</div>`}
       ${dropped ? `<div class="dropped">TOP${DATA.top_n} 이탈: ${dropped}</div>` : ""}
     </section>
@@ -160,6 +160,14 @@ function render() {
     </div>`;
   drawRank(cat);
   drawPerf(cat);
+}
+
+function chg5(it) {
+  const h = ((DATA.prices || {})[state.date] || {})[it.ticker] || [];
+  if (!h.length || !h[0][1]) return "–";
+  const r = it.close / h[0][1] - 1;
+  const title = h.map(([d, c]) => `${d.slice(4, 6)}/${d.slice(6)} ${Math.round(c).toLocaleString()}`).join("\n");
+  return `<span class="${r >= 0 ? "up" : "down"}" title="${title}">${r >= 0 ? "+" : ""}${(r * 100).toFixed(1)}%</span>`;
 }
 
 function axisColors() {

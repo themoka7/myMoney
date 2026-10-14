@@ -132,3 +132,39 @@ def test_release_notes_contains_tables_and_performance(tmp_path):
     for label, _ in config.CATEGORIES.values():
         assert f"## {label}" in md
     assert "2일 누적" in md and "유니버스 평균" in md
+
+
+def test_followup_tracks_price_after_selection():
+    s = {d: pd.DataFrame({"close": [100.0, 50.0, 10.0]}, index=pd.Index(["A", "B", "C"], name="ticker"))
+         for d in ["d1", "d2", "d3"]}
+    s["d2"]["close"] = [110.0, 55.0, 11.0]
+    s["d3"]["close"] = [121.0, 45.0, 12.0]
+    tops = {"d1": _day(["A", "B"]), "d2": _day(["A", "C"]), "d3": _day(["A"])}
+    for d, day in tops.items():
+        for items in day["categories"].values():
+            for it in items:
+                it["close"] = float(s[d].loc[it["ticker"], "close"])
+    f = {r["ticker"]: r for r in track.followup(tops, "d3", load=s.get)["value"]}
+    assert f["A"]["first_date"] == "d1" and f["A"]["path"] == [["d2", 110.0], ["d3", 121.0]]
+    assert f["A"]["ret"] == pytest.approx(0.21) and f["A"]["still_in"]
+    assert f["B"]["ret"] == pytest.approx(-0.10) and not f["B"]["still_in"]
+    assert f["C"]["first_date"] == "d2" and f["C"]["path"] == [["d3", 12.0]]
+
+
+def test_release_notes_shows_recent_prices_and_followup(tmp_path):
+    from mymoney.report import release_notes
+
+    snap_dir, top_dir = tmp_path / "s", tmp_path / "t"
+    for i, d in enumerate(["20261012", "20261013"]):
+        s = make_snap(30 + i, n=80)
+        s["market_cap"], s["trading_value"] = 1e12, 1e10
+        sc = score(s)
+        top = top_n(sc)
+        prices = {it["ticker"]: [["20261008", 1000.0], ["20261009", 1100.0]]
+                  for items in top.values() for it in items}
+        track.save_day(d, s, top, len(sc), snap_dir=snap_dir, top_dir=top_dir, prices=prices)
+    site = track.build_site(top_dir=top_dir, snap_dir=snap_dir, site_file=tmp_path / "h.json")
+    load = lambda d: track.load_snapshot(d, snap_dir)
+    md = release_notes(site, "20261013", track.followup(track.load_tops(top_dir), "20261013", load=load))
+    assert "최근 거래일 종가" in md and "| 10/8 | 10/9 | **10/13** |" in md
+    assert "선정 후 추적" in md and "5일 흐름" in md

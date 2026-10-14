@@ -69,3 +69,28 @@ def collect(date: str) -> pd.DataFrame:
     if df["close"].fillna(0).sum() == 0:
         raise RuntimeError(f"{date}: 시세 데이터가 비어 있습니다 (휴장일이거나 KRX 로그인 실패)")
     return df
+
+
+def recent_closes(date: str, tickers: list[str], days: int = 5,
+                  cached=lambda d: None) -> dict[str, list[list]]:
+    """tickers의 date 이전 days거래일 종가. {ticker: [[YYYYMMDD, close], ...]} (오래된 순, date 제외).
+
+    cached(d)가 스냅샷 DataFrame을 돌려주면 KRX 호출 없이 그걸 쓴다.
+    """
+    stock = _stock()
+    biz = [pd.Timestamp(x).strftime("%Y%m%d")
+           for x in stock.get_previous_business_days(fromdate=_shift(date, days * 3 + 10), todate=date)]
+    prev = [d for d in biz if d < date][-days:]
+    out: dict[str, list[list]] = {t: [] for t in tickers}
+    for d in prev:
+        snap = cached(d)
+        if snap is not None:
+            close = snap["close"]
+        else:
+            df = stock.get_market_ohlcv(d, market="ALL")
+            df.index = df.index.astype(str).str.zfill(6)
+            close = df["종가"]
+        for t in tickers:
+            if t in close.index and pd.notna(close[t]):
+                out[t].append([d, float(close[t])])
+    return out

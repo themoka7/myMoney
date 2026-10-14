@@ -13,7 +13,7 @@ from . import config, track
 
 
 def cmd_run(args) -> int:
-    from .collect import collect, latest_business_day
+    from .collect import collect, latest_business_day, recent_closes
     from .score import score, top_n
 
     date = latest_business_day(args.date)
@@ -22,7 +22,10 @@ def cmd_run(args) -> int:
     else:
         snap = collect(date)
         scores = score(snap)
-        track.save_day(date, snap, top_n(scores), universe_size=len(scores))
+        top = top_n(scores)
+        tickers = sorted({it["ticker"] for items in top.values() for it in items})
+        prices = recent_closes(date, tickers, cached=track.load_snapshot)
+        track.save_day(date, snap, top, universe_size=len(scores), prices=prices)
         print(f"{date}: 전체 {len(snap)}종목, 유니버스 {len(scores)}종목 저장")
     track.build_site()
     _print_day(date)
@@ -43,7 +46,8 @@ def cmd_notes(args) -> int:
         print("저장된 데이터가 없습니다.", file=sys.stderr)
         return 1
     date = args.date or site["dates"][-1]
-    text = release_notes(site, date)
+    follow = track.followup(track.load_tops(), date)
+    text = release_notes(site, date, follow)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(text)
