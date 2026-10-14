@@ -139,7 +139,11 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
                site_file: Path = SITE_FILE) -> dict:
     tops = load_tops(top_dir)
     data = {
-        "categories": {k: {"label": v[0], "desc": v[1]} for k, v in config.CATEGORIES.items()},
+        "categories": {
+            k: {"label": v[0], "desc": v[1], "easy": config.CATEGORY_GUIDE[k][0],
+                "caution": config.CATEGORY_GUIDE[k][2]}
+            for k, v in config.CATEGORIES.items()
+        },
         "top_n": config.TOP_N,
         "round_trip_cost": config.ROUND_TRIP_COST,
         "dates": sorted(tops),

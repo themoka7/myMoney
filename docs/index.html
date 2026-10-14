@@ -40,6 +40,7 @@ th { color: var(--muted); font-weight: 500; font-size: 13px; }
 td.l, th.l { text-align: left; }
 .up { color: var(--up); } .down { color: var(--down); } .new { color: var(--new); font-weight: 600; }
 .code { color: var(--muted); font-size: 12px; margin-left: 4px; }
+.guide { background: var(--chip); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin: 0 0 12px; }
 .dropped { color: var(--muted); font-size: 13px; margin-top: 10px; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px; }
 .stat { background: var(--chip); border-radius: 8px; padding: 8px 10px; }
@@ -73,6 +74,7 @@ footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
 <script>
 const $ = (s) => document.querySelector(s);
 const pct = (v, d = 2) => v == null ? "–" : (v * 100).toFixed(d) + "%";
+const md = (t) => t.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
 const fmtDate = (d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const PALETTE = ["#2f5bd3", "#d1342f", "#1f9d6b", "#b7791f", "#8a4fd3", "#0e8fb0", "#c2417d", "#5c7a1f", "#e07b39", "#6b6b66"];
@@ -137,6 +139,7 @@ function render() {
     <section class="card">
       <h2>${meta.label} TOP${DATA.top_n} · ${fmtDate(state.date)}</h2>
       <p class="desc">${meta.desc}</p>
+      ${meta.easy ? `<p class="guide">💡 ${md(meta.easy)}<br>⚠️ ${md(meta.caution)}</p>` : ""}
       ${items.length ? `<div class="tablewrap"><table>
         <thead><tr><th>순위</th><th>전일대비</th><th class="l">종목</th><th class="l">시장</th><th>점수</th><th>종가</th><th>연속</th></tr></thead>
         <tbody>${rows}</tbody></table></div>` : `<div class="empty">해당 카테고리 데이터 없음</div>`}
