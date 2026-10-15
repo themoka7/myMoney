@@ -289,6 +289,36 @@ def _attach_returns(days: dict, load) -> None:
                         it[f"ret{n}"] = float(snap.loc[it["ticker"], col])
 
 
+def _foreign_movers(dates: list[str], date: str, load, n: int = 5) -> dict:
+    """외국인 5일 순매수 '금액' 절댓값 상위 종목 = 시장 수급을 움직인 종목.
+
+    비율(외국인/거래)은 '그 종목 안에서 외국인이 주도했나'를, 금액은 '시장을 움직였나'를 보여 준다.
+    """
+    snap = load(date)
+    if snap is None or "foreign_net_5d" not in snap:
+        return {}
+    i = dates.index(date)
+    prev = load(dates[i - 1]) if i else None
+    v5 = sum((load(x)["trading_value"].reindex(snap.index).fillna(0) for x in dates[max(0, i - 4):i]),
+             snap["trading_value"])
+    total = float(snap["foreign_net_5d"].sum())
+    by_market = {m: float(g["foreign_net_5d"].sum()) for m, g in snap.groupby("market")}
+    f = snap["foreign_net_5d"].fillna(0)
+    rows = []
+    for t in f.abs().sort_values(ascending=False).head(n).index:
+        r = snap.loc[t]
+        f5 = float(r["foreign_net_5d"])
+        rows.append({
+            "ticker": t, "name": r["name"], "market": r["market"], "close": float(r["close"]),
+            "ret": float(r["close"] / prev.loc[t, "close"] - 1) if prev is not None and t in prev.index else None,
+            "ret5": float(r["ret_5d"]) if "ret_5d" in r and pd.notna(r["ret_5d"]) else None,
+            "foreign_5d": f5,
+            "share": f5 / total if total and f5 * total > 0 else None,
+            "foreign_vs_value": f5 / v5[t] if v5[t] else None,
+        })
+    return {"total": total, "by_market": by_market, "rows": rows}
+
+
 def _data_checks(snap: pd.DataFrame) -> dict:
     """리포트에 그대로 싣기 전에 사람이 봐야 할 이상치."""
     turn = snap["trading_value"] / snap["market_cap"].where(snap["market_cap"] > 0)
@@ -346,7 +376,8 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
     data["flows"] = {kind: flow.compute(list(tops), load, members) for kind, members in groups.items()}
     data["theme_etfs"] = flow.theme_labels(meta_dir)
     data["members"] = flow.members_by_date(list(tops), load, groups, data["flows"], keep_days=MEMBER_DAYS)
-    for day in data["members"].values():  # 대시보드에서도 같은 해석 문장을 보여 준다
+    for d, day in data["members"].items():  # 대시보드에서도 같은 해석 문장을 보여 준다
+        explain.set_market(data["flows"].get("market", {}).get(d, {}).get("전체", {}).get("foreign_5d"))
         for kind in day.values():
             for group, rows in kind.items():
                 for r in rows:
@@ -356,6 +387,7 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
     if tops:
         data["followup"] = followup(tops, max(tops), load=load)
     data["theme_overlap"] = flow.theme_overlap(groups.get("theme", {}))
+    data["movers"] = {d: _foreign_movers(sorted(tops), d, load) for d in sorted(tops)[-SITE_MEMBER_DAYS:]}
     from . import runlog
     data["run_meta"] = {d: tops[d].get("run") for d in tops if tops[d].get("run")}
     data["runs"] = runlog.load()[-30:]

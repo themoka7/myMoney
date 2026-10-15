@@ -173,6 +173,8 @@ def members(snap: pd.DataFrame, prev: pd.DataFrame | None, prev5: pd.DataFrame |
     g = snap.loc[idx]
     g = g[g["trading_value"] > 0].sort_values("trading_value", ascending=False)
     total = g["trading_value"].sum()
+    cap_total = g["market_cap"].sum() if "market_cap" in g else 0
+    cap_w = (g["market_cap"] / cap_total) if cap_total else None   # 그룹 안 시가총액 비중 (원래 몸집)
     if limit:
         g = g.head(limit)
     history = history or []
@@ -206,6 +208,7 @@ def members(snap: pd.DataFrame, prev: pd.DataFrame | None, prev5: pd.DataFrame |
             "ret5": r5.get(t),
             "value": float(val),
             "weight": float(val / total) if total else None,
+            "cap_weight": num(cap_w[t]) if cap_w is not None else None,
             "foreign_5d": f5,
             "market_cap": num(cap),
             "turnover": num(val / cap) if cap else None,                       # 하루 손바뀜 비율

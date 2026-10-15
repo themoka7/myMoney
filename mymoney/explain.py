@@ -17,6 +17,7 @@ def _won(v: float) -> str:
 
 MIN_VALUE = 50e8             # 거래대금 50억 미만은 '평소 대비' 같은 배수가 의미 없이 튄다
 SPOTLIGHT_MIN_VALUE = 300e8  # 전체 하이라이트는 거래대금 300억 이상만
+MARKET_MOVER_SHARE = 0.05    # 시장 전체 외국인 순매수(같은 방향)의 5% 이상이면 '시장 수급 주도'
 MAX_TURNOVER = 1.0           # 회전율 100% 초과는 '데이터 점검' 대상 — 해설하지 않는다
 
 _CARD: dict = {}  # signals.scorecard() 결과. 문장 끝에 그 규칙의 과거 성적을 붙인다
@@ -47,13 +48,36 @@ def claim(rule: str, default: str, contrary: str) -> str:
     return default + evidence(rule)
 
 
+_MARKET = {"foreign_5d": None}  # 그날 시장 전체 외국인 5일 순매수 (종목이 '시장을 움직였나' 판단용)
+
+
+def set_market(foreign_5d_total: float | None) -> None:
+    _MARKET["foreign_5d"] = foreign_5d_total
+
+
+def market_share(f5: float | None) -> float | None:
+    """이 종목 외국인 5일 순매수가 시장 전체 외국인 순매수(같은 방향)의 몇 %인지."""
+    tot = _MARKET["foreign_5d"]
+    if f5 is None or not tot or f5 * tot <= 0:
+        return None
+    return f5 / tot
+
+
 def signal_score(r: dict) -> float:
-    """해설을 보여 줄 우선순위. 오늘 등락·평소 대비 거래·외국인 비중·이벤트성 여부."""
-    ret, ret5, heat, fv = r.get("ret"), r.get("ret5"), r.get("value_heat"), r.get("foreign_vs_value")
+    """해설 우선순위 = 오늘 등락 + 5일 등락 + 평소 대비 거래 + 외국인 비중 + 외국인 금액 규모 + 이벤트성.
+
+    '오늘'만 보면 며칠에 걸쳐 고르게 빠진 대형주(예: 5일 -20%, 외국인 -6조)가 묻힌다.
+    그래서 5일 등락과 금액 규모(log10 억 원)를 같이 넣는다.
+    """
+    import math
+
+    ret, ret5, heat, fv, f5 = (r.get(k) for k in ("ret", "ret5", "value_heat", "foreign_vs_value", "foreign_5d"))
     event = ret is not None and ret5 is not None and abs(ret) >= 0.05 and (
         (ret * ret5 > 0 and abs(ret) >= 0.6 * abs(ret5)) or abs(ret) > abs(ret5))
-    return (abs(ret or 0) * 100 * 1.0 + max(0.0, (heat or 0) - 1) * 2.0
-            + abs(fv or 0) * 100 * 0.5 + (5 if event else 0))
+    size = max(0.0, math.log10(abs(f5) / 1e8)) * 3 if f5 else 0.0   # 100억 → 3, 1조 → 6, 6조 → 11
+    return (abs(ret or 0) * 100 * 1.0 + abs(ret5 or 0) * 100 * 0.5
+            + max(0.0, (heat or 0) - 1) * 2.0 + abs(fv or 0) * 100 * 0.5
+            + size + (5 if event else 0))
 
 
 def notes(r: dict, group: str) -> list[tuple[str, float]]:
@@ -77,6 +101,10 @@ def notes(r: dict, group: str) -> list[tuple[str, float]]:
     elif ev:
         out.append((f"오늘 하루 {_p(ret)}가 5일 누적({_p(ret5)})보다 크다 — 며칠간 반대로 가던 걸 하루에 뒤집은 "
                     f"이벤트성 {kind}. {rebound}.", 0))
+    elif ret5 is not None and abs(ret5) >= 0.10:
+        way = "빠졌다(추세적 매도)" if ret5 < 0 else "올랐다(추세적 매수)"
+        today = f" 오늘은 {_p(ret)}." if ret is not None else ""
+        out.append((f"5일 {_p(ret5)} — 하루가 아니라 며칠에 걸쳐 고르게 {way}.{today}", 0))
     elif ret is not None and abs(ret) >= 0.08:
         out.append((f"오늘 {_p(ret)}로 크게 움직였다.", 0))
 
@@ -98,11 +126,22 @@ def notes(r: dict, group: str) -> list[tuple[str, float]]:
         out.append((f"시가총액의 {turn:.1%}가 하루에 거래됐다 — 단타 자금이 몰린 상태.", 0))
 
     # 3. 분야 안에서의 쏠림
-    if w is not None and w >= 0.4:
-        out.append((f"{group} 거래의 {w:.0%}가 이 종목 하나에서 나왔다 — 분야 전체보다 이 종목 개별 이슈일 가능성이 크다.", 0))
+    # 원래 몸집(시가총액 비중)이 큰 대형주는 거래 비중도 큰 게 정상 → 몸집보다 1.5배 이상 쏠렸을 때만 '개별 이슈'
+    cw = r.get("cap_weight")
+    if w is not None and w >= 0.4 and (cw is None or w >= 1.5 * cw):
+        out.append((f"{group} 거래의 {w:.0%}가 이 종목 하나에서 나왔다(시총 비중 {cw:.0%})" if cw is not None else
+                    f"{group} 거래의 {w:.0%}가 이 종목 하나에서 나왔다", 0))
+        out[-1] = (out[-1][0] + " — 분야 전체보다 이 종목 개별 이슈일 가능성이 크다.", 0)
 
-    # 4. 외국인: 10% 미만은 말하지 않는다(표의 꼬리표로 충분), 10~20%는 방향만, 20% 이상은 '주도'
-    if f5 is not None and fv is not None and abs(fv) >= 0.10:
+    # 4-1. 시장 영향: 금액 기준. 시장 전체 외국인 순매수(같은 방향)의 5% 이상이면 비율과 무관하게 말한다
+    ms = market_share(f5)
+    if ms is not None and ms >= MARKET_MOVER_SHARE:
+        way = "순매도" if f5 < 0 else "순매수"
+        inner = f", 이 종목 5일 거래의 {abs(fv):.0%}" if fv is not None else ""
+        out.append((f"외국인 5일 {_won(f5)} {way} — 시장 전체 외국인 {way}({_won(_MARKET['foreign_5d'])})의 "
+                    f"**{ms:.0%}**{inner}. 비율이 아니라 금액으로 시장을 움직인 종목.", 0))
+    # 4-2. 종목 안에서의 주도: 비율 기준. 10% 미만은 말하지 않는다(표의 꼬리표로 충분), 10~20%는 방향만, 20% 이상은 '주도'
+    elif f5 is not None and fv is not None and abs(fv) >= 0.10:
         way = "순매수" if f5 > 0 else "순매도"
         if "FOREIGN_LED" in rules:
             out.append((f"외국인이 5일 거래의 {abs(fv):.0%}({_won(f5)})를 {way} — " + claim(

@@ -387,3 +387,19 @@ def test_runlog_records_trigger_and_delay(tmp_path, monkeypatch):
     assert runlog.describe({"collected_at": "2026-10-15 18:03", "trigger": "예약",
                             "scheduled_kst": "16:40", "delay_min": 83}) == \
         "⏱ 데이터 수집 2026-10-15 18:03 KST · 예약 실행 (16:40 예약 → 83분 지연)"
+
+
+def test_market_mover_and_trend_notes():
+    from mymoney import explain
+
+    hynix = {"name": "SK하이닉스", "ret": -0.0132, "ret5": -0.197, "value": 7.2e12, "value_heat": 1.0,
+             "turnover": 0.01, "weight": 0.44, "cap_weight": 0.55, "foreign_5d": -6.3e12, "foreign_vs_value": -0.22}
+    tck = {"name": "티씨케이", "ret": -0.055, "ret5": -0.07, "value": 307e8, "value_heat": 1.2,
+           "weight": 0.01, "foreign_5d": 288e8, "foreign_vs_value": 0.25}
+    explain.set_market(-12.5e12)
+    text = " ".join(t for t, _ in explain.notes(hynix, "반도체"))
+    assert "며칠에 걸쳐 고르게 빠졌다" in text
+    assert "시장 전체 외국인 순매도(-12.5조)의 **50%**" in text
+    assert "개별 이슈" not in text          # 대형주는 거래 비중이 큰 게 정상
+    assert explain.signal_score(hynix) > explain.signal_score(tck)  # 금액 차이 200배를 반영
+    explain.set_market(None)

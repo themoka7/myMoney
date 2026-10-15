@@ -205,7 +205,27 @@ def _forest_section(site: dict, date: str) -> list[str]:
             f"{_foreign_cell(m['foreign_5d'], m.get('foreign_vs_value'), flow.compound(rets[-5:]))} |"
         )
     lines += ["", "<sub>평소 대비 = 최근 20거래일 평균 거래대금 대비. 오른/내린 종목 수는 전 기록일 종가 대비.</sub>", ""]
+    lines += _movers_section(site.get("movers", {}).get(date))
     return lines
+
+
+def _movers_section(mv: dict | None) -> list[str]:
+    if not mv or not mv.get("rows"):
+        return []
+    tot = mv["total"]
+    way = "순매도" if tot < 0 else "순매수"
+    same = [r for r in mv["rows"] if r["share"]]
+    top2 = sum(r["share"] for r in same[:2]) if len(same) >= 2 else None
+    out = ["### 🧲 시장 수급 주도 종목 — 외국인 5일 순매수 '금액' 기준", "",
+           f"> 시장 전체 외국인 5일 {_won(tot, signed=True)} {way}"
+           + (f" 중 **상위 2종목이 {top2:.0%}**" if top2 else "") + ". "
+           "비율(외국인/거래)은 '그 종목 안에서 외국인이 주도했나'를, 금액은 '시장을 움직였나'를 보여 준다 — 둘은 다른 질문이다.", "",
+           "| 종목 | 외국인 5일 | 시장 전체 대비 | 종목 거래 대비 | 오늘 | 5일 |", "|---|--:|--:|--:|--:|--:|"]
+    for r in mv["rows"]:
+        out.append(f"| {_link(r['name'], r['ticker'])} | {_won(r['foreign_5d'], signed=True)} | "
+                   f"{_share(r['share'])} | "
+                   f"{explain.foreign_strength(r.get('foreign_vs_value')) or '–'} | {_pct(r['ret'])} | {_pct(r['ret5'])} |")
+    return out + [""]
 
 
 def _headline(site: dict, date: str) -> list[str]:
@@ -264,7 +284,7 @@ def _spotlight(members: dict, limit: int = 5) -> list[str]:
     if not pool:
         return []
     out = ["### 🔎 오늘 눈에 띈 종목 — 숫자가 말해주는 것",
-           "<sub>신호 강도 = 오늘 등락 + 평소 대비 거래 + 외국인 비중 + 이벤트성. 문장 끝 [검증]은 그 해설 규칙의 과거 적중률(맨 아래 성적표)</sub>", ""]
+           "<sub>신호 강도 = 오늘 등락 + 5일 등락 + 평소 대비 거래 + 외국인 비중 + 외국인 금액 규모 + 이벤트성. 문장 끝 [검증]은 그 해설 규칙의 과거 적중률(맨 아래 성적표)</sub>", ""]
     for _, group, r, ts in pool[:limit]:
         _SEEN.add(r["ticker"])
         out.append(f"- **{_link(r['name'], r['ticker'])}** <sub>{group} · {_pct(r['ret'])} · "
@@ -437,9 +457,20 @@ def _summary3(site: dict, date: str) -> list[str]:
     if th:
         top = max(th, key=lambda n: th[n]["share"])
         hot = [n for n in th if (th[n].get("heat") or 0) >= 1.5]
-        s = f"💰 **돈의 흐름** · 가장 몰린 테마 **{top}** (거래대금의 {th[top]['share']:.0%}, {_pct(th[top]['ret'])})"
+        r5 = flow.compound(flow.series(flows["theme"], top, "ret", date)[-5:])
+        mem = site.get("members", {}).get(date, {}).get("theme", {}).get(top, [])
+        lead = max(mem, key=lambda r: abs(r.get("foreign_5d") or 0), default=None)
+        fx = f" · 외국인 {_won(th[top].get('foreign_5d'), signed=True)}" + (
+            f"({lead['name']} {_won(lead['foreign_5d'], signed=True)})" if lead and lead.get("foreign_5d") else "")
+        s = (f"💰 **돈의 흐름** · 가장 몰린 테마 **{top}** 거래대금의 {th[top]['share']:.0%} · "
+             f"오늘 {_pct(th[top]['ret'])} · 5일 **{_pct(r5)}**{fx}")
         s += (" · 평소보다 확 몰림: " + ", ".join(f"{n} {th[n]['heat']:.1f}배" for n in hot)) if hot else " · 평소보다 확 몰린 테마 없음"
         lines.append(s)
+    mv = site.get("movers", {}).get(date)
+    if mv and mv.get("rows"):
+        same = [r for r in mv["rows"] if r["share"]][:2]
+        lines.append(f"🧲 **수급** · 외국인 5일 {_won(mv['total'], signed=True)} 중 "
+                     + " · ".join(f"{r['name']} {_won(r['foreign_5d'], signed=True)}({r['share']:.0%})" for r in same))
     ck = site.get("checks", {}).get(date)
     if ck is not None:
         n_hi, n_un = len(ck.get("high_turnover", [])), len(ck.get("unnamed", []))
@@ -514,6 +545,7 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
     sig = site.get("_signals")
     card = signals.scorecard(signals.as_of(sig, date, site["dates"])) if sig is not None else site.get("scorecard", {})
     explain.set_scorecard(card)
+    explain.set_market(site.get("flows", {}).get("market", {}).get(date, {}).get("전체", {}).get("foreign_5d"))
     follow = follow or {}
 
     def series(it):

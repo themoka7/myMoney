@@ -26,6 +26,11 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 select, button { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 10px; cursor: pointer; }
 .runbtn { margin-left: auto; text-decoration: none; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--card); }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); max-width: 460px; width: calc(100% - 32px); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog label { display: block; margin: 8px 0; font-size: 14px; }
+dialog input, dialog textarea { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); box-sizing: border-box; }
+.linkish { border: none; background: none; color: var(--muted); text-decoration: underline; margin-right: auto; }
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .tab { border-radius: 999px; }
 .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -72,12 +77,39 @@ footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
     <button id="prev" aria-label="이전 날짜">◀</button>
     <select id="date" aria-label="날짜"></select>
     <button id="next" aria-label="다음 날짜">▶</button>
-    <a class="runbtn" href="https://github.com/themoka7/myMoney/actions/workflows/daily.yml" target="_blank" rel="noopener"
-       title="GitHub 화면 오른쪽 Run workflow → 초록 Run workflow">▶️ 지금 다시 돌리기</a>
+    <button id="runbtn" class="runbtn" title="비밀번호를 넣으면 지금 배치를 실행한다">▶️ 지금 돌리기</button>
   </div>
   <div class="tabs" id="tabs" role="tablist"></div>
 
   <div id="content"></div>
+
+  <dialog id="runDlg">
+    <form method="dialog" id="runForm">
+      <h3 style="margin-top:0">▶️ 지금 배치 돌리기</h3>
+      <div id="runAsk">
+        <label>비밀번호 <input type="password" id="runPw" autocomplete="current-password" required></label>
+        <p class="muted">날짜를 비우면 가장 최근 장 마감일. 이미 수집된 날은 리포트만 갱신.</p>
+        <label>날짜 (선택) <input id="runDate" placeholder="YYYYMMDD" pattern="\d{8}" inputmode="numeric"></label>
+      </div>
+      <div id="runSetup" hidden>
+        <p>처음 한 번만 설정. 토큰은 <b>이 브라우저 안에서 비밀번호로 암호화</b>되고, 암호문만 저장소에 올라간다.</p>
+        <ol class="muted">
+          <li>GitHub → Settings → Developer settings → Fine-grained tokens → 저장소 <code>myMoney</code>만, 권한 <b>Actions: Read and write</b></li>
+          <li>아래에 토큰과 비밀번호를 넣고 [암호화] → [GitHub에 저장] → 초록 Commit 버튼</li>
+        </ol>
+        <label>토큰 <input type="password" id="setupToken" autocomplete="off"></label>
+        <label>비밀번호 (길게) <input type="password" id="setupPw" autocomplete="new-password"></label>
+        <label>비밀번호 확인 <input type="password" id="setupPw2" autocomplete="new-password"></label>
+        <textarea id="setupOut" rows="4" readonly hidden style="width:100%"></textarea>
+      </div>
+      <p id="runMsg" class="muted" role="status"></p>
+      <div class="bar" style="justify-content:flex-end">
+        <button type="button" id="runSetupToggle" class="linkish">버튼 설정</button>
+        <button value="cancel">닫기</button>
+        <button type="button" id="runGo">실행</button>
+      </div>
+    </form>
+  </dialog>
 
   <footer>
     점수는 그날 유니버스(시총·거래대금 기준 통과 종목) 안에서의 백분위입니다. 수익률은 동일가중이며
@@ -389,6 +421,87 @@ function drawPerf(cat) {
     },
   });
 }
+
+/* ---------- 비밀번호로 잠근 '지금 돌리기' 버튼 ----------
+   토큰은 브라우저 안에서 PBKDF2(SHA-256, 25만 회) → AES-GCM으로 암호화되어 docs/run-key.json에 암호문만 저장된다.
+   실행 시 비밀번호로 복호화한 토큰은 api.github.com 호출에만 쓰이고 어디에도 저장되지 않는다. */
+const REPO = "themoka7/myMoney", WORKFLOW = "daily.yml", KDF_ITER = 250000;
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function deriveKey(pw, salt, iter) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: iter, hash: "SHA-256" },
+    base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function encryptToken(token, pw) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pw, salt, KDF_ITER);
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(token));
+  return { v: 1, kdf: "PBKDF2-SHA256", iter: KDF_ITER, salt: b64(salt), iv: b64(iv), ct: b64(ct) };
+}
+async function decryptToken(box, pw) {
+  const key = await deriveKey(pw, unb64(box.salt), box.iter);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(box.iv) }, key, unb64(box.ct));
+  return new TextDecoder().decode(pt);
+}
+async function loadBox() {
+  try { const r = await fetch("run-key.json", { cache: "no-store" }); return r.ok ? r.json() : null; } catch (e) { return null; }
+}
+
+(function initRun() {
+  const dlg = $("#runDlg"), msg = $("#runMsg");
+  let setup = false, box = null;
+  const show = (isSetup) => {
+    setup = isSetup;
+    $("#runAsk").hidden = isSetup; $("#runSetup").hidden = !isSetup;
+    $("#runGo").textContent = isSetup ? "암호화" : "실행";
+    $("#runSetupToggle").textContent = isSetup ? "← 실행으로" : "버튼 설정";
+    msg.textContent = "";
+  };
+  $("#runbtn").onclick = async () => {
+    box = await loadBox();
+    show(!box);
+    if (!box) msg.textContent = "아직 설정되지 않았다. 처음 한 번만 설정하면 된다.";
+    dlg.showModal();
+  };
+  $("#runSetupToggle").onclick = () => show(!setup);
+  $("#runGo").onclick = async () => {
+    msg.textContent = "";
+    if (setup) {
+      const t = $("#setupToken").value.trim(), p1 = $("#setupPw").value, p2 = $("#setupPw2").value;
+      if (!t || !p1) { msg.textContent = "토큰과 비밀번호를 넣어 주세요."; return; }
+      if (p1 !== p2) { msg.textContent = "비밀번호 확인이 다릅니다."; return; }
+      if (p1.length < 10) { msg.textContent = "암호문은 공개되므로 비밀번호는 10자 이상으로."; return; }
+      const json = JSON.stringify(await encryptToken(t, p1));
+      $("#setupToken").value = "";
+      const out = $("#setupOut"); out.hidden = false; out.value = json;
+      const url = box ? `https://github.com/${REPO}/edit/main/docs/run-key.json`
+                      : `https://github.com/${REPO}/new/main?filename=docs/run-key.json&value=${encodeURIComponent(json)}`;
+      msg.innerHTML = `암호화 완료 (토큰 원문은 지웠다). <a href="${url}" target="_blank" rel="noopener"><b>GitHub에 저장 →</b></a> ` +
+        (box ? "열린 편집 화면에 위 내용을 붙여넣고 Commit." : "열린 화면에서 초록 Commit 버튼.") + " 1~2분 뒤부터 버튼이 동작한다.";
+      return;
+    }
+    const pw = $("#runPw").value, date = $("#runDate").value.trim();
+    if (date && !/^\d{8}$/.test(date)) { msg.textContent = "날짜는 YYYYMMDD 형식으로."; return; }
+    let token;
+    try { token = await decryptToken(box, pw); } catch (e) { msg.textContent = "비밀번호가 틀렸습니다."; return; }
+    msg.textContent = "요청 중…";
+    const r = await fetch(`https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+      body: JSON.stringify({ ref: "main", inputs: date ? { date } : {} }),
+    }).catch(() => null);
+    token = null;
+    $("#runPw").value = "";
+    if (r && r.status === 204) {
+      msg.innerHTML = `✅ 실행 요청됨 — 보통 1분 안에 시작, 10분 안팎이면 리포트가 갱신된다. ` +
+        `<a href="https://github.com/${REPO}/actions/workflows/${WORKFLOW}" target="_blank" rel="noopener">진행 상황 보기</a>`;
+    } else {
+      msg.textContent = `실패 (${r ? r.status : "네트워크"}) — 토큰 만료·권한(Actions: Read and write)을 확인하세요.`;
+    }
+  };
+})();
 </script>
 </body>
 </html>
