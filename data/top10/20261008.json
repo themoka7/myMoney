@@ -416,6 +416,12 @@
  "score_version": {
   "value": "v2"
  },
+ "run": {
+  "collected_at": "2026-10-15 17:34",
+  "trigger": "수동",
+  "scheduled_kst": null,
+  "delay_min": null
+ },
  "prices": {
   "001450": [
    [
