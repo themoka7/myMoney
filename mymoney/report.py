@@ -1,7 +1,7 @@
 """하루치 결과를 GitHub Release 본문용 마크다운으로 만든다."""
 from __future__ import annotations
 
-from . import config, explain, flow, signals
+from . import config, explain, flow, runlog, signals
 
 NAVER = "https://finance.naver.com/item/main.naver?code={}"
 _SEEN: set[str] = set()  # 이미 해설한 종목 → 뒤에서는 '↑ 위 참고'
@@ -403,6 +403,20 @@ def _checks_section(checks: dict) -> list[str]:
     return out
 
 
+def _runs_section(runs: list[dict]) -> list[str]:
+    if not runs:
+        return []
+    out = ["<details><summary>⏱ 최근 배치 실행 기록</summary>", "",
+           "GitHub 예약 실행은 정시를 보장하지 않아 지연·누락이 생긴다. 그래서 같은 날 여러 번 걸어 두고, "
+           "먼저 돈 실행이 수집하고 나머지는 Release만 갱신한다.", "",
+           "| 실행 시각 (KST) | 방식 | 예약 | 지연 | 대상 날짜 | 수집 |", "|---|---|---|--:|---|:-:|"]
+    for r in reversed(runs[-10:]):
+        delay = f"{r['delay_min']}분" if r.get("delay_min") not in (None, "") else "–"
+        out.append(f"| {r['run_at']} | {r['trigger']} | {r.get('scheduled_kst') or '–'} | {delay} | "
+                   f"{_fmt_date(r['target_date'])} | {'✅' if r['collected'] == 'Y' else '이미 수집됨'} |")
+    return out + ["", "</details>", ""]
+
+
 def _summary3(site: dict, date: str) -> list[str]:
     """맨 위 고정 3줄: 숲 / 돈의 흐름 / 이상치."""
     flows = site.get("flows", {})
@@ -518,7 +532,8 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
         + f" · 누적 기록 {i + 1}일",
         "",
     ]
-    out = out[:1] + [""] + _summary3(site, date) + out[2:]
+    when = runlog.describe(site.get("run_meta", {}).get(date))
+    out = out[:1] + ([when] if when else []) + [""] + _summary3(site, date) + out[2:]
     out += _forest_section(site, date) + _flow_section(site, date, level)
     out += ["## 🌱 종목 TOP10 — 이제 나무를 보자", "",
             "> 숲(시장)과 돈의 흐름을 본 뒤에, 기준별로 점수가 높은 종목. 시장이 빠지는 날엔 TOP10도 같이 빠지는 게 보통이다.", ""]
@@ -549,6 +564,7 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
     out += ["## 다음날 보유 성과 (누적)", ""] + _perf_table(site["performance"], date)
     out += [""] + _scorecard_section(card)
     out += _checks_section(site.get("checks", {}).get(date, {}))
+    out += _runs_section(site.get("runs", []))
     out += ["", GLOSSARY, "", "---",
             "<sub>점수는 그날 유니버스 안에서의 백분위(0~100). 투자 권유가 아닌 개인 학습 기록입니다.</sub>"]
     return "\n".join(out)

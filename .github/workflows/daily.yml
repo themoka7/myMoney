@@ -53,6 +53,8 @@ jobs:
           INPUT_DATE: ${{ inputs.date }}
           INPUT_FORCE: ${{ inputs.force }}
           INPUT_BACKFILL: ${{ inputs.backfill_days }}
+          RUN_EVENT: ${{ github.event_name }}
+          RUN_CRON: ${{ github.event.schedule }}
         run: |
           ARGS=""
           if [ "$INPUT_FORCE" = "true" ]; then ARGS="$ARGS --force"; fi

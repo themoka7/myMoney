@@ -46,8 +46,11 @@ def _refresh_meta(date: str) -> None:
 def cmd_run(args) -> int:
     from .collect import latest_business_day
 
+    from . import runlog
+
     date = latest_business_day(args.date)
-    _collect_day(date, args.force)
+    collected = _collect_day(date, args.force)
+    runlog.record(date, collected)
     _refresh_meta(date)
     track.build_site()
     _print_day(date)
@@ -61,10 +64,13 @@ def cmd_backfill(args) -> int:
     end = latest_business_day(args.end)
     days = business_days(end, args.days)
     print(f"백필 {days[0]} ~ {days[-1]} ({len(days)}영업일)")
+    from . import runlog
+
     failed = []
     for d in days:
         try:
-            _collect_day(d, args.force)
+            if _collect_day(d, args.force):
+                runlog.record(d, True)
         except Exception as e:  # 하루 실패가 전체를 막지 않게
             failed.append(d)
             print(f"{d}: 실패 — {e}", file=sys.stderr)

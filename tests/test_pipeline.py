@@ -367,3 +367,23 @@ def test_signals_grade_rules_from_later_snapshots():
     assert card["EVENT_DROP"]["n"] == 1 and card["EVENT_DROP"]["hit"] == 1.0
     assert card["EVENT_DROP"]["verdict"] == "표본 부족"
     assert signals.verdict("EVENT_DROP", 40, 0.6, 0.02, -0.01).endswith("보이지만 먹을 수 없는 신호)")
+
+
+def test_runlog_records_trigger_and_delay(tmp_path, monkeypatch):
+    from datetime import datetime
+    from mymoney import runlog
+
+    assert runlog.cron_to_kst("40 7 * * 1-5") == "16:40"
+    assert runlog.cron_to_kst("23 23 * * 0-4") == "08:23"
+    t = datetime(2026, 10, 15, 18, 3, tzinfo=runlog.KST)
+    assert runlog.delay_minutes(t, "16:40") == 83
+
+    monkeypatch.setenv("RUN_EVENT", "schedule")
+    monkeypatch.setenv("RUN_CRON", "40 7 * * 1-5")
+    monkeypatch.setattr(runlog, "now_kst", lambda: t)
+    row = runlog.record("20261015", True, path=tmp_path / "runs.csv")
+    assert row["trigger"] == "예약" and row["scheduled_kst"] == "16:40" and row["delay_min"] == 83
+    assert runlog.load(tmp_path / "runs.csv")[0]["collected"] == "Y"
+    assert runlog.describe({"collected_at": "2026-10-15 18:03", "trigger": "예약",
+                            "scheduled_kst": "16:40", "delay_min": 83}) == \
+        "⏱ 데이터 수집 2026-10-15 18:03 KST · 예약 실행 (16:40 예약 → 83분 지연)"

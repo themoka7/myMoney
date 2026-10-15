@@ -123,6 +123,35 @@ python -m pytest -q                      # 합성 데이터로 점수·추이 �
 
 대시보드 로컬 확인: `cd docs && python -m http.server` → http://localhost:8000
 
+## 언제 도나 (실행 시각)
+
+| 예약 (KST) | 역할 |
+|---|---|
+| 평일 16:40 | 기본 — 장 마감(15:30) 후 KRX 데이터 확정 이후 |
+| 평일 18:17 | 백업 |
+| 평일 20:47 | 백업 |
+| 다음날 08:23 | 최후 백업 (전날이 다 빠졌을 때) |
+
+GitHub 예약 실행은 **정시를 보장하지 않는다** — 붐비면 수십 분~수 시간 늦고, 가끔 아예 빠진다
+(실측: 20:47 예약 → 22:04, 08:23 예약 → 10:33). 그래서 여러 번 걸어 두고, 먼저 돈 실행이 수집하고 나머지는 Release만 갱신한다.
+
+- 각 리포트 맨 위에 **실제 수집 시각·방식·예약 대비 지연**이 찍힌다: `⏱ 데이터 수집 2026-10-15 18:03 KST · 예약 실행 (16:40 예약 → 83분 지연)`
+- 모든 실행 이력: `data/runs.csv` (리포트 하단 "최근 배치 실행 기록"에도 표시)
+
+### 정확히 16:40에 돌리고 싶다면 (외부 타이머로 깨우기)
+
+GitHub 자체 예약 대신 외부 cron 서비스가 정시에 `workflow_dispatch` API를 호출하게 하면 보통 1분 안에 시작된다.
+
+1. GitHub → Settings → Developer settings → Fine-grained token: 이 저장소만, **Actions: Read and write** 권한
+2. [cron-job.org](https://cron-job.org) 등에서 평일 16:40 (Asia/Seoul)에 아래 요청 예약
+   ```
+   POST https://api.github.com/repos/themoka7/myMoney/actions/workflows/daily.yml/dispatches
+   Authorization: Bearer <토큰>
+   Accept: application/vnd.github+json
+   Body: {"ref":"main"}
+   ```
+3. GitHub 예약 실행은 백업으로 그대로 둔다 (이미 수집된 날은 건너뛴다)
+
 ## 자동화 (GitHub Actions)
 
 `.github/workflows/daily.yml` 이 평일 16:40 KST에 실행되어 결과를 `main`에 커밋하고,

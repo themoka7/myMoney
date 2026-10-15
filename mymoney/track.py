@@ -55,8 +55,15 @@ def save_day(date: str, snap: pd.DataFrame, top: dict, universe_size: int,
     snap.to_csv(snap_dir / f"{date}.csv.gz", encoding="utf-8")
     from .score import SCORE_VERSION
 
+    from . import runlog
+
+    run_at = runlog.now_kst()
+    how, sched = runlog.trigger()
     payload = {"date": date, "universe_size": universe_size, "categories": top,
-               "score_version": SCORE_VERSION if "eps_1y" in snap.columns else {"value": "v1"}}
+               "score_version": SCORE_VERSION if "eps_1y" in snap.columns else {"value": "v1"},
+               # 이 날짜 데이터를 실제로 수집한 시각과 방식 (GitHub 예약 실행은 지연될 수 있다)
+               "run": {"collected_at": run_at.strftime("%Y-%m-%d %H:%M"), "trigger": how,
+                       "scheduled_kst": sched, "delay_min": runlog.delay_minutes(run_at, sched)}}
     if prices is not None:
         payload["prices"] = prices  # TOP N 종목의 직전 거래일 종가들
     (top_dir / f"{date}.json").write_text(
@@ -349,6 +356,9 @@ def build_site(top_dir: Path = TOP_DIR, snap_dir: Path = SNAP_DIR,
     if tops:
         data["followup"] = followup(tops, max(tops), load=load)
     data["theme_overlap"] = flow.theme_overlap(groups.get("theme", {}))
+    from . import runlog
+    data["run_meta"] = {d: tops[d].get("run") for d in tops if tops[d].get("run")}
+    data["runs"] = runlog.load()[-30:]
     data["checks"] = {d: _data_checks(load(d)) for d in sorted(tops)[-SITE_MEMBER_DAYS:] if load(d) is not None}
     site_file.parent.mkdir(parents=True, exist_ok=True)
     # 대시보드 파일에는 테마 구성 종목만, 최근 SITE_MEMBER_DAYS일치만 (Release는 메모리의 전체 데이터를 쓴다)
