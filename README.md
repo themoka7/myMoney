@@ -7,7 +7,7 @@
 | **오늘(가장 최근) 리포트** | [📊 최신 TOP10 리포트](https://github.com/themoka7/myMoney/releases/latest) |
 | 날짜별 지난 리포트 전체 | [Releases 목록](https://github.com/themoka7/myMoney/releases) |
 | 차트 대시보드 (순위 추이·누적 수익률 그래프) | [대시보드](https://themoka7.github.io/myMoney/) <sub>Settings → Pages 를 `main` / `/docs` 로 켜야 열림</sub> |
-| 배치 실행 기록 / 수동 실행·백필 | [Actions → daily-top10](https://github.com/themoka7/myMoney/actions/workflows/daily.yml) |
+| **▶️ 지금 돌리기** / 실행 기록 / 백필 | [Actions → daily-top10](https://github.com/themoka7/myMoney/actions/workflows/daily.yml) → 오른쪽 `Run workflow` |
 
 리포트는 평일 16:40(KST)에 자동으로 새로 올라온다. "최신 리포트" 링크는 항상 가장 최근 날짜를 연다.
 

@@ -25,6 +25,7 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
 select, button { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.runbtn { margin-left: auto; text-decoration: none; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--card); }
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .tab { border-radius: 999px; }
 .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -71,6 +72,8 @@ footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
     <button id="prev" aria-label="이전 날짜">◀</button>
     <select id="date" aria-label="날짜"></select>
     <button id="next" aria-label="다음 날짜">▶</button>
+    <a class="runbtn" href="https://github.com/themoka7/myMoney/actions/workflows/daily.yml" target="_blank" rel="noopener"
+       title="GitHub 화면 오른쪽 Run workflow → 초록 Run workflow">▶️ 지금 다시 돌리기</a>
   </div>
   <div class="tabs" id="tabs" role="tablist"></div>
 

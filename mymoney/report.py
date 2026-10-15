@@ -403,6 +403,11 @@ def _checks_section(checks: dict) -> list[str]:
     return out
 
 
+RUN_URL = "https://github.com/themoka7/myMoney/actions/workflows/daily.yml"
+RUN_BUTTON = (f"**[▶️ 지금 다시 돌리기]({RUN_URL})** <sub>열린 화면 오른쪽 `Run workflow` → 초록 `Run workflow` 클릭 · "
+              "날짜를 비우면 가장 최근 장 마감일, 이미 수집된 날은 리포트만 갱신</sub>")
+
+
 def _runs_section(runs: list[dict]) -> list[str]:
     if not runs:
         return []
@@ -533,7 +538,7 @@ def _render_body(site: dict, date: str, follow: dict | None, level: int) -> str:
         "",
     ]
     when = runlog.describe(site.get("run_meta", {}).get(date))
-    out = out[:1] + ([when] if when else []) + [""] + _summary3(site, date) + out[2:]
+    out = out[:1] + ([when] if when else []) + [RUN_BUTTON, ""] + _summary3(site, date) + out[2:]
     out += _forest_section(site, date) + _flow_section(site, date, level)
     out += ["## 🌱 종목 TOP10 — 이제 나무를 보자", "",
             "> 숲(시장)과 돈의 흐름을 본 뒤에, 기준별로 점수가 높은 종목. 시장이 빠지는 날엔 TOP10도 같이 빠지는 게 보통이다.", ""]
